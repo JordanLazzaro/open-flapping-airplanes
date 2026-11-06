@@ -1,0 +1,957 @@
+<meta charset="utf-8">
+<title>Megakernel From First Principles</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta name="description" content="A deep technical walk through the open-flapping-airplanes CUDA megakernel, built up step by step from a persistent kernel to training, serving and Doom in one launch.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: one 68ch reading column; figures, code and the simulator break out to a wider measure. */
+:root {
+  --paper: #f5f6f8;
+  --surface: #ffffff;
+  --ink: #161a20;
+  --muted: #5a6371;
+  --rule: #d8dce3;
+  --code-bg: #eceff4;
+  --accent: #2c56c4;
+  --train: #2c56c4;
+  --serve: #b86f00;
+  --doom: #bf3a2f;
+  --idle: #c3c9d2;
+  --ok: #217a4b;
+  --hl-kw: #8b2fb3;
+  --hl-type: #1f6f8b;
+  --hl-str: #8a5a00;
+  --hl-num: #b23a48;
+  --hl-com: #6f7783;
+  --hl-fn: #2c56c4;
+  --op-fwd: #2c56c4;
+  --op-head: #7046c0;
+  --op-dx: #0f8a8a;
+  --op-dw: #4f8a1f;
+  --op-adam: #c2711b;
+  --f-display: "Bricolage Grotesque", "Avenir Next", "Segoe UI", system-ui, sans-serif;
+  --f-body: "Source Serif 4", "Iowan Old Style", Georgia, serif;
+  --f-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --measure: 68ch;
+  --wide: 980px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #101318; --surface: #161a21; --ink: #e5e8ee; --muted: #98a1af; --rule: #2a313b; --code-bg: #1a1f27;
+    --accent: #84a6ff; --train: #6f95ff; --serve: #f0b24a; --doom: #ff6d60; --idle: #3a424e; --ok: #5cc98d;
+    --hl-kw: #d39bff; --hl-type: #6cc7e0; --hl-str: #f0c274; --hl-num: #ff8f9c; --hl-com: #7f8896; --hl-fn: #8fb0ff;
+    --op-fwd: #6f95ff; --op-head: #b195ff; --op-dx: #3fc7c7; --op-dw: #8fcf5a; --op-adam: #f2a24a;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #101318; --surface: #161a21; --ink: #e5e8ee; --muted: #98a1af; --rule: #2a313b; --code-bg: #1a1f27;
+  --accent: #84a6ff; --train: #6f95ff; --serve: #f0b24a; --doom: #ff6d60; --idle: #3a424e; --ok: #5cc98d;
+  --hl-kw: #d39bff; --hl-type: #6cc7e0; --hl-str: #f0c274; --hl-num: #ff8f9c; --hl-com: #7f8896; --hl-fn: #8fb0ff;
+  --op-fwd: #6f95ff; --op-head: #b195ff; --op-dx: #3fc7c7; --op-dw: #8fcf5a; --op-adam: #f2a24a;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--paper); color: var(--ink);
+  font-family: var(--f-body); font-size: 18px; line-height: 1.62;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 0 64px;
+}
+main { max-width: var(--wide); margin: 0 auto; }
+.col { max-width: var(--measure); margin-left: auto; margin-right: auto; }
+.wide { max-width: var(--wide); margin-left: auto; margin-right: auto; }
+a { color: var(--accent); text-underline-offset: 2px; }
+a:focus-visible, button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+h1, h2, h3 { font-family: var(--f-display); text-wrap: balance; line-height: 1.12; letter-spacing: -0.01em; }
+h1 { font-size: clamp(2.1rem, 5.2vw, 3.6rem); font-weight: 800; margin: 0 0 18px; }
+h2 { font-size: clamp(1.5rem, 3vw, 2rem); font-weight: 700; margin: 72px auto 8px; }
+h3 { font-size: 1.18rem; font-weight: 700; margin: 36px auto 6px; }
+h2 .n { color: var(--accent); font-variant-numeric: tabular-nums; margin-right: 0.35em; }
+p, ul, ol { margin: 0 auto 1em; }
+ul, ol { padding-left: 1.3em; }
+li { margin-bottom: 0.35em; }
+code, kbd { font-family: var(--f-mono); font-size: 0.84em; }
+:not(pre) > code { background: var(--code-bg); padding: 0.08em 0.32em; border-radius: 4px; overflow-wrap: anywhere; }
+strong { font-weight: 600; }
+.eyebrow { font-family: var(--f-mono); font-size: 0.78rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); margin-bottom: 14px; }
+.dek { font-size: 1.22rem; color: var(--muted); max-width: 60ch; margin-left: 0; }
+header.hero { padding-top: 56px; }
+
+/* the "one launch" ledger under the title */
+.ledger { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0; margin: 34px 0 10px; border-top: 2px solid var(--ink); }
+.ledger div { padding: 12px 14px 12px 0; border-bottom: 1px solid var(--rule); min-width: 0; }
+.ledger b { display: block; font-family: var(--f-display); font-size: 1.7rem; font-weight: 800; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.ledger span { font-family: var(--f-mono); font-size: 0.72rem; color: var(--muted); letter-spacing: 0.02em; }
+.ledger .t b { color: var(--train); } .ledger .s b { color: var(--serve); } .ledger .d b { color: var(--doom); }
+.source-note { font-family: var(--f-mono); font-size: 0.72rem; color: var(--muted); }
+
+nav.toc { margin: 40px auto 0; padding: 18px 0; border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
+nav.toc ol { columns: 2 260px; column-gap: 32px; margin: 0; padding-left: 1.6em; font-family: var(--f-display); font-size: 0.98rem; }
+nav.toc li { break-inside: avoid; margin-bottom: 4px; }
+nav.toc a { color: var(--ink); text-decoration: none; }
+nav.toc a:hover { color: var(--accent); text-decoration: underline; }
+
+/* code */
+pre { margin: 18px auto 22px; background: var(--code-bg); border-radius: 6px; overflow-x: auto; font-size: 14px; line-height: 1.55; }
+pre code { display: block; padding: 16px 18px; font-size: inherit; font-family: var(--f-mono); color: var(--ink); white-space: pre; min-width: max-content; }
+.codewrap { margin: 18px auto 22px; }
+.codewrap pre { margin: 0; border-top-left-radius: 0; border-top-right-radius: 0; }
+.codecap { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 16px; font-family: var(--f-mono); font-size: 0.74rem; color: var(--muted); background: var(--code-bg); border-bottom: 1px solid var(--rule); padding: 8px 18px; border-radius: 6px 6px 0 0; }
+.codecap a { color: var(--muted); }
+.hljs-keyword, .hljs-meta .hljs-keyword { color: var(--hl-kw); }
+.hljs-type, .hljs-built_in { color: var(--hl-type); }
+.hljs-string, .hljs-meta .hljs-string { color: var(--hl-str); }
+.hljs-number, .hljs-literal { color: var(--hl-num); }
+.hljs-comment { color: var(--hl-com); font-style: italic; }
+.hljs-title, .hljs-title.function_ { color: var(--hl-fn); }
+.hljs-meta { color: var(--hl-com); }
+
+/* asides */
+.note { border-left: 3px solid var(--accent); padding: 4px 0 4px 16px; margin: 22px auto; color: var(--ink); }
+.note p:last-child { margin-bottom: 0; }
+.note .lbl { font-family: var(--f-mono); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--accent); display: block; margin-bottom: 2px; }
+.note.warn { border-left-color: var(--doom); }
+.note.warn .lbl { color: var(--doom); }
+
+/* figures and code break out of the reading column */
+.col > figure, .col > .codewrap, .col > pre { width: min(var(--wide), calc(100vw - 48px)); max-width: none; position: relative; left: 50%; transform: translateX(-50%); margin-left: 0; margin-right: 0; }
+.col > figure figcaption { margin-left: auto; margin-right: auto; }
+figure { margin: 30px auto 34px; }
+figure .fig { overflow-x: auto; }
+figure svg { display: block; width: 100%; height: auto; min-width: 560px; }
+figure.narrow svg { min-width: 0; }
+figcaption { font-size: 0.92rem; color: var(--muted); margin-top: 10px; max-width: var(--measure); }
+figcaption b { color: var(--ink); font-weight: 600; }
+svg text { font-family: var(--f-mono); fill: var(--ink); }
+svg .mut { fill: var(--muted); }
+svg .ln { stroke: var(--muted); fill: none; }
+svg .rule { stroke: var(--rule); fill: none; }
+svg .box { fill: var(--surface); stroke: var(--rule); }
+svg .boxk { fill: var(--surface); stroke: var(--ink); }
+svg .c-train { fill: var(--train); } svg .c-serve { fill: var(--serve); } svg .c-doom { fill: var(--doom); } svg .c-idle { fill: var(--idle); }
+svg .s-train { stroke: var(--train); } svg .s-serve { stroke: var(--serve); } svg .s-doom { stroke: var(--doom); } svg .s-acc { stroke: var(--accent); }
+svg .t-acc { fill: var(--accent); } svg .t-doom { fill: var(--doom); } svg .t-ok { fill: var(--ok); }
+svg .o-fwd { fill: var(--op-fwd); } svg .o-dx { fill: var(--op-dx); } svg .o-dw { fill: var(--op-dw); } svg .o-adam { fill: var(--op-adam); } svg .o-head { fill: var(--op-head); }
+svg .onfill { fill: var(--paper); }
+
+/* tables */
+.tablewrap { overflow-x: auto; margin: 18px auto 26px; }
+table { border-collapse: collapse; width: 100%; font-size: 0.93rem; font-variant-numeric: tabular-nums; }
+th, td { text-align: left; padding: 7px 12px 7px 0; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th { font-family: var(--f-display); font-weight: 700; border-bottom: 2px solid var(--ink); white-space: nowrap; }
+td.num, th.num { text-align: right; padding-right: 0; padding-left: 12px; white-space: nowrap; }
+td code { font-size: 0.82em; }
+.bar { display: inline-block; height: 9px; background: var(--train); vertical-align: middle; border-radius: 1px; }
+
+/* simulator */
+.sim { background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; padding: 18px; margin: 30px auto 34px; }
+.sim h4 { font-family: var(--f-display); font-size: 1.05rem; margin: 0 0 4px; }
+.sim .controls { display: flex; flex-wrap: wrap; gap: 14px 28px; margin: 14px 0 6px; font-family: var(--f-mono); font-size: 0.8rem; }
+.sim label { display: flex; align-items: center; gap: 10px; color: var(--muted); }
+.sim input[type=range] { width: 140px; accent-color: var(--accent); }
+.sim output { color: var(--ink); min-width: 2.2em; font-variant-numeric: tabular-nums; }
+.sim button { font-family: var(--f-mono); font-size: 0.78rem; background: var(--paper); color: var(--ink); border: 1px solid var(--rule); border-radius: 5px; padding: 5px 10px; cursor: pointer; }
+.sim button:hover { border-color: var(--accent); }
+.gantt { margin-top: 14px; }
+.gantt .gl { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px 12px; font-family: var(--f-mono); font-size: 0.78rem; margin-bottom: 4px; }
+.gantt .gl b { font-weight: 600; }
+.gantt canvas { display: block; width: 100%; height: auto; background: var(--paper); border-radius: 4px; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-family: var(--f-mono); font-size: 0.74rem; color: var(--muted); margin-top: 12px; }
+.legend i { display: inline-block; width: 11px; height: 11px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+.verdict { font-family: var(--f-mono); font-size: 0.85rem; margin-top: 12px; }
+.verdict b { color: var(--ok); }
+
+.checklist li { margin-bottom: 0.6em; }
+footer { margin-top: 80px; padding-top: 18px; border-top: 1px solid var(--rule); font-size: 0.9rem; color: var(--muted); }
+
+@media (max-width: 560px) {
+  body { font-size: 17px; }
+  pre { font-size: 12.5px; }
+  .ledger { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ledger b { font-size: 1.35rem; }
+}
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
+</style>
+
+<main>
+<header class="hero col">
+  <div class="eyebrow">CUDA &middot; persistent kernels &middot; open-flapping-airplanes</div>
+  <h1>A megakernel, from first principles</h1>
+  <p class="dek">How one CUDA kernel launch trains a 162M-parameter GPT, streams text from the weights it is still training, and runs Doom at 35 frames per second. We build it up one mechanism at a time, from a grid-stride loop to the code that ran on a B200.</p>
+  <div class="ledger" role="list">
+    <div role="listitem"><b>1</b><span>kernel launch for the whole run</span></div>
+    <div role="listitem"><b>296</b><span>resident blocks, none exit</span></div>
+    <div role="listitem" class="t"><b>125,287</b><span>training tasks per step, in 278 phases</span></div>
+    <div role="listitem" class="t"><b>48.2 s</b><span>4,000 steps on 116 SMs</span></div>
+    <div role="listitem" class="s"><b>1,694</b><span>tokens/s served on 24 SMs</span></div>
+    <div role="listitem" class="d"><b>35.0</b><span>Doom fps on 8 SMs</span></div>
+  </div>
+  <p class="source-note">One B200 run of the 3-stage <code>tcgen05</code> build: <a href="https://github.com/JordanLazzaro/open-flapping-airplanes/blob/main/b200-run/results/megakernel_tc3_fa/split_r2.txt">b200-run/results/megakernel_tc3_fa/split_r2.txt</a>. The README's headline averages three such runs (48.1 s, 1,660 tok/s).</p>
+</header>
+
+<nav class="toc col" aria-label="Contents">
+<ol>
+  <li><a href="#boundary">What a kernel boundary costs</a></li>
+  <li><a href="#persistent">A kernel that never exits</a></li>
+  <li><a href="#ticket">Claiming work with one atomic</a></li>
+  <li><a href="#phases">Tasks, phases and tickets</a></li>
+  <li><a href="#deps">Dependencies without a grid barrier</a></li>
+  <li><a href="#monotonic">Counters that never reset</a></li>
+  <li><a href="#deadlock">Why it cannot deadlock</a></li>
+  <li><a href="#sim">Barriers against counters, simulated</a></li>
+  <li><a href="#graph">Compiling a GPT into a phase table</a></li>
+  <li><a href="#bodies">The task bodies</a></li>
+  <li><a href="#partition">Three programs, one grid</a></li>
+  <li><a href="#serve">Serving from weights that are still training</a></li>
+  <li><a href="#doom">Doom as a megakernel job</a></li>
+  <li><a href="#blackwell">Blackwell: tcgen05 inside a persistent kernel</a></li>
+  <li><a href="#host">The host side and the results</a></li>
+  <li><a href="#limits">What it does not buy you</a></li>
+  <li><a href="#checklist">A checklist for your own</a></li>
+</ol>
+</nav>
+
+<section class="col">
+<p>A <strong>megakernel</strong> is a single GPU kernel that runs a whole program. Instead of launching one kernel per operation (a matmul, a LayerNorm, an attention block) and letting the driver and the hardware scheduler move between them, you launch one kernel whose blocks stay resident for the entire run and pull work from queues in global memory. The GPU stops being a device you send kernels to and becomes a machine that runs its own scheduler.</p>
+<p>This post walks through the megakernel in this repository, <code>llm/b200/megakernel/ofa.cu</code>, by rebuilding it from nothing. Every step adds one mechanism and says why the previous version was not enough. Code blocks marked with a file path are verbatim excerpts from the repo; the unmarked ones are minimal versions written for this post to isolate one idea. By the end, every line of the real scheduler should read as obvious.</p>
+<p>The prerequisites are the CUDA basics: threads, warps, blocks, shared memory, <code>__syncthreads()</code>, and global-memory atomics. Everything else is introduced where it is needed.</p>
+</section>
+
+<!-- ================================================================== 1 -->
+<section class="col" id="boundary">
+<h2><span class="n">1</span>What a kernel boundary costs</h2>
+<p>Start with how a training framework normally runs one step of a transformer. Each operation is a kernel. The host enqueues them on a stream, and the stream guarantees that kernel <em>k</em>+1 does not start until every block of kernel <em>k</em> has finished:</p>
+<pre><code class="language-cpp">for (int step = 0; step &lt; steps; step++)
+  for (const Op&amp; op : graph)                        // 278 ops per training step in our GPT
+    op.kernel&lt;&lt;&lt;op.ntiles, 256, op.smem, stream&gt;&gt;&gt;(op.args);   // implicit grid-wide barrier between ops</code></pre>
+<p>Each boundary costs four things:</p>
+<ol>
+<li><strong>The launch itself.</strong> A host API call, a few microseconds of driver work, and a command the GPU front end must process. CUDA graphs remove most of the host part but not the rest.</li>
+<li><strong>The fill.</strong> The new grid's first blocks must be dispatched to SMs, their registers and shared memory allocated, and their pipelines primed with loads before any math happens.</li>
+<li><strong>The tail.</strong> A grid finishes when its <em>last</em> block finishes. If an op has 256 tasks and the GPU holds 232 blocks at once, the second wave has 24 blocks and the other 208 slots sit idle until they finish. Small ops are mostly tail. In our step, the LayerNorm gamma-gradient reduction has 3 tasks; with a barrier after it, 229 of 232 training slots wait.</li>
+<li><strong>The barrier.</strong> The next op cannot start any tile, even a tile whose inputs are already final, until every tile of the previous op is done. Work that is independent (a weight gradient and the input gradient of the same layer) is serialized unless someone sets up multiple streams by hand.</li>
+</ol>
+<p>Count the boundaries for what this repo runs: one training step of the 12-layer GPT is 278 operations, so 4,000 steps is 1.1 million of them. Serving at batch 1 costs 38 operations per generated token, about 3.1 million for the 81,600 tokens produced alongside training. The framework baselines in the repo, measured with Nsight Systems, issue between 2.2 million and 15.2 million kernels for the same work depending on how they are counted. The megakernel issues one (plus two one-off setup kernels).</p>
+<p>A megakernel does not make any individual matmul faster. It removes the boundaries: no launches, no fill after the first, and tails filled with whatever other work is ready. The rest of this post is about how to do that without the program falling apart.</p>
+</section>
+
+<!-- ================================================================== 2 -->
+<section class="col" id="persistent">
+<h2><span class="n">2</span>A kernel that never exits</h2>
+<p>The first move is to stop mapping blocks to work. In an ordinary kernel, block <code>blockIdx.x</code> computes output tile <code>blockIdx.x</code> and exits. In a <strong>persistent</strong> kernel you launch only as many blocks as the GPU can hold at once, and each block loops over many units of work:</p>
+<pre><code class="language-cpp">__global__ void persistent(const Work* w, int ntasks) {
+  for (int t = blockIdx.x; t &lt; ntasks; t += gridDim.x)    // grid-stride over tasks
+    run_task(w, t);                                        // all 256 threads of the block run one task
+}
+
+int occ = 0;
+cudaOccupancyMaxActiveBlocksPerMultiprocessor(&amp;occ, persistent, 256, smem_bytes);
+persistent&lt;&lt;&lt;num_sms * occ, 256, smem_bytes&gt;&gt;&gt;(w, ntasks);   // exactly one full "wave"</code></pre>
+<p>Why exactly one wave? Because later we will make blocks <em>wait</em> for each other. A block that spins waiting for a result occupies its SM slot. If the block it waits for was never scheduled (it is queued behind the spinning blocks), nobody makes progress. As long as every block of the grid is resident at the same time, no block depends on a block that has not started. This is the one hardware assumption the whole design rests on.</p>
+<p>The size of that wave comes from the per-SM budgets: registers, shared memory and threads. The B200 build uses 256 threads per block, caps registers at 128 per thread (<code>-maxrregcount=128</code> and <code>__launch_bounds__(256, 2)</code>, so two blocks use the whole 64K-register file), and gives each block 99,200 bytes of dynamic shared memory. Two blocks fit per SM, so the grid is 148 &times; 2 = 296 blocks:</p>
+<div class="codewrap"><div class="codecap"><span>llm/b200/megakernel/ofa.cu</span><span>host, grid sizing</span></div>
+<pre><code class="language-cpp">int occ = 0; CK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&amp;occ, ofa_kernel, 256, DYN_SMEM));
+if (tg::kTcgen05 &amp;&amp; occ &lt; BPS) {
+  // The occupancy API returns 1 for any kernel with tcgen05 instructions. The hardware co-schedules more when each block allocates
+  // its TMEM once and relinquishes the allocation permit (tg::block_init), so size the grid from registers and shared memory.
+  ...
+  const int by_regs = regs_sm / (((fa.numRegs + 7) / 8 * 8) * 256);
+  const int by_smem = smem_sm / (DYN_SMEM + (int)fa.sharedSizeBytes + rsv);
+  occ = std::min(by_regs, by_smem);
+}
+const int nblocks = nsm * std::min(occ, BPS);</code></pre></div>
+<p>Note the comment: on Blackwell the occupancy API under-reports this kernel, so the code computes the fit itself. We come back to why in <a href="#blackwell">section 14</a>.</p>
+<p>One more consequence of persistence: <strong>every task shares one register budget and one shared-memory buffer.</strong> A kernel has a single register count, the maximum over every code path it contains, and a single dynamic shared-memory size. The repo checks at compile time that every task body fits in the buffer the GEMM needs:</p>
+<div class="codewrap"><div class="codecap"><span>llm/b200/megakernel/ofa.cu</span><span>lines 72&ndash;76</span></div>
+<pre><code class="language-cpp">constexpr int GEMM_SMEM = tg::smem_bytes();           // 64 KB (mma.sync, 4 stages) / 98 KB (tcgen05, 3 stages x 32 KB + barriers)
+constexpr int DYN_SMEM = GEMM_SMEM;
+static_assert(attn::SMEM_DKDV &lt;= DYN_SMEM &amp;&amp; ew::ce_smem_bytes&lt;8&gt;() &lt;= DYN_SMEM &amp;&amp; ew::ln_bwd_smem_bytes&lt;D&gt;() &lt;= DYN_SMEM, "smem budget");
+static_assert(ew::embed_bwd_wte_smem_bytes(N) &lt;= DYN_SMEM, "smem budget");
+static_assert(decode::smem_bytes&lt;DC&gt;() &lt;= DYN_SMEM, "smem budget");</code></pre></div>
+</section>
+
+<!-- ================================================================== 3 -->
+<section class="col" id="ticket">
+<h2><span class="n">3</span>Claiming work with one atomic</h2>
+<p>A static grid-stride loop gives block <em>b</em> tasks <em>b</em>, <em>b</em>+296, <em>b</em>+592 and so on. That is fine when every task takes the same time. Ours do not: a GEMM tile with K = 100,352 (the language-model head's input gradient) runs far longer than a 16-row LayerNorm task. A block that drew several long tasks finishes late while others idle.</p>
+<p>The fix is a <strong>ticket counter</strong>: one unsigned integer in global memory. A block that needs work takes the next number with <code>atomicAdd</code>. Fast blocks simply come back more often.</p>
+<pre><code class="language-cpp">__global__ void persistent(const Work* w, unsigned* ticket, unsigned total) {
+  __shared__ unsigned s_task;
+  for (;;) {
+    if (threadIdx.x == 0) s_task = atomicAdd(ticket, 1u);  // one atomic per task, by one thread
+    __syncthreads();                                       // publish s_task to the block
+    const unsigned t = s_task;
+    __syncthreads();                                       // all threads read it before thread 0 overwrites it
+    if (t &gt;= total) return;
+    run_task(w, t);
+  }
+}</code></pre>
+<p>Two details matter. The claim is done by one thread and broadcast through shared memory, because the whole block runs one task cooperatively. And there are two barriers: the first makes the value visible to the block; the second stops thread 0 from racing ahead into the next iteration and overwriting <code>s_task</code> while slower warps are still reading it. You will see exactly this shape in the real <code>job_loop</code>, with <code>s_sel[4]</code> in place of <code>s_task</code>.</p>
+<p>A single counter contended by 232 blocks sounds like a bottleneck. It is not, as long as each claim is a single <code>atomicAdd</code>: the L2 atomic unit serializes them, but each takes a few nanoseconds and a task takes microseconds. The trouble starts when a claim needs a retry loop, which is where we will be in <a href="#deadlock">section 7</a>.</p>
+</section>
+
+<!-- ================================================================== 4 -->
+<section class="col" id="phases">
+<h2><span class="n">4</span>Tasks, phases and tickets</h2>
+<p>We need vocabulary for the work itself.</p>
+<ul>
+<li>A <strong>task</strong> is what one block does between two claims: one 128 &times; 128 output tile of a GEMM, one 64-query tile of one attention head, 16 rows of a LayerNorm, 65,536 elements of AdamW.</li>
+<li>A <strong>phase</strong> is a set of independent tasks of the same kind: all 576 tiles of layer 3's QKV projection, for example. Tasks in a phase can run in any order and in parallel.</li>
+<li>A <strong>job</strong> is an ordered table of phases plus a dependency list per phase. The training job has 278 phases per step; the decode job has 38 per token.</li>
+</ul>
+<p>Every task body in the repo follows the same contract, written down in the library READMEs: it is a <code>__device__</code> function called by all 256 threads of a block; it never reads <code>blockIdx</code> or <code>gridDim</code> (a task does not know which block runs it); it takes the shared dynamic buffer as a parameter; and it ends with <code>__syncthreads()</code>, so the next task can reuse the buffer. Because of that contract the same GEMM tile code runs unchanged in a stand-alone test kernel and inside the megakernel.</p>
+<p>A phase is described by a plain struct that the host fills in and copies to the device:</p>
+<div class="codewrap"><div class="codecap"><span>llm/b200/megakernel/ofa.cu</span><span>lines 87&ndash;104</span></div>
+<pre><code class="language-cpp">enum Kind { K_DATA, K_EMBED, K_LN_FWD, K_GEMM, K_ATT_FWD, K_ATT_PREP, K_ATT_BWD, K_CE, K_CE_MEAN, K_LN_BWD, K_LN_DG, K_EMB_WTE, K_EMB_WPE, K_ADAMW, K_DECODE };
+
+struct PhaseDesc {
+  int kind, ntasks, layout, epi;
+  int tilesM, i0, i1, i2;
+  tg::Args ga;
+  const void* p[10];
+  size_t n;
+};
+
+struct Job {
+  int nph, tps, limit, last_ph;                 // phases, tasks per step, #steps, phase whose completion ends a step
+  const PhaseDesc* ph;
+  const int *prefix, *ntasks, *dep_off, *dep_cnt;
+  const int2* deps;                             // (phase, step delta): need done[phase] &gt;= ntasks[phase] * (step + 1 + delta)
+  int* done;
+  unsigned* ticket;
+};</code></pre></div>
+<p>Now the key trick: <strong>a ticket is not a task index into one phase; it is a position in the whole run.</strong> Lay every task of every phase of every step on one number line, in order. With <code>tps</code> tasks per step and <code>prefix[p]</code> the number of tasks in phases 0 to <em>p</em>&minus;1, ticket <em>g</em> decodes to a step, a phase and a task within the phase:</p>
+<pre><code class="language-cpp">// tps = tasks per step; prefix[p] = tasks in phases 0..p-1, prefix[nph] = tps
+const int step  = g / tps;
+const int r     = g - step * tps;               // position inside the step
+int ph = 0; while (r &gt;= prefix[ph + 1]) ph++;   // the phase that contains r
+const int local = r - prefix[ph];               // task index inside the phase</code></pre>
+<figure><div class="fig"><svg viewBox="0 0 1000 232" role="img" aria-label="Ticket number line: steps, then phases within a step"><text x="0" y="36" font-size="12" class="mut">run</text><rect x="60" y="20" width="246" height="26" rx="3" class="box"/><text x="183.0" y="37" text-anchor="middle" font-size="11.5">step 0 · 0–125,286</text><rect x="310" y="20" width="246" height="26" rx="3" class="boxk"/><text x="433.0" y="37" text-anchor="middle" font-size="11.5">step 1 · 125,287–250,573</text><rect x="560" y="20" width="246" height="26" rx="3" class="box"/><text x="683.0" y="37" text-anchor="middle" font-size="11.5">step 2 · 250,574–375,860</text><text x="885" y="37" text-anchor="middle" font-size="12" class="mut">… step 3,999</text><path d="M310,46 L60,96 M556,46 L960,96" class="rule" stroke-width="1"/><text x="0" y="116" font-size="12" class="mut">step 1</text><rect x="60.0" y="98" width="0.9" height="28" class="c-idle"/><rect x="61.9" y="98" width="258.3" height="28" class="o-fwd"/><text x="191.5" y="116.5" text-anchor="middle" font-size="12" class="onfill">forward, layers 0–11</text><rect x="321.2" y="98" width="0.8" height="28" class="c-idle"/><rect x="323.0" y="98" width="179.2" height="28" class="o-head"/><text x="413.1" y="116.5" text-anchor="middle" font-size="12" class="onfill">logits</text><rect x="503.3" y="98" width="6.4" height="28" class="o-head"/><rect x="510.6" y="98" width="36.0" height="28" class="o-dx"/><rect x="547.6" y="98" width="395.4" height="28" class="o-dx"/><text x="745.8" y="116.5" text-anchor="middle" font-size="12" class="onfill">backward, layers 11–0</text><rect x="944.0" y="98" width="5.6" height="28" class="o-dw"/><rect x="950.6" y="98" width="8.4" height="28" class="o-adam"/><text x="960" y="142" text-anchor="end" font-size="11" class="mut">widths proportional to task counts; small phases: data, LN, loss, adamw</text><line x1="408.2" y1="14" x2="408.2" y2="52" class="s-acc" stroke-width="2"/><line x1="419.2" y1="92" x2="419.2" y2="150" class="s-acc" stroke-width="2"/><text x="413.2" y="13" font-size="11" class="t-acc">g = 175,287</text><text x="60" y="172" font-size="12.5">g = 175,287   →   step = g / 125,287 = 1,   r = g − 125,287 = 50,000</text><text x="60" y="192" font-size="12.5">r ∈ [36,616, 61,704)   →   phase “logits” (25,088 tiles),   local = r − 36,616 = 13,384</text><text x="60" y="212" font-size="12.5">tilesM = 4,096 / 128 = 32   →   tm = 13,384 mod 32 = 8,   tn = 13,384 / 32 = 418   (vocab columns 53,504–53,631)</text></svg></div><figcaption><b>One counter enumerates the whole run.</b> Ticket <code>g</code> divides into a step and a position <code>r</code> in that step; the prefix sums of the phase table turn <code>r</code> into a phase and a task index; the GEMM phase turns the task index into an output tile. The numbers are the real ones for the 162M-parameter model.</figcaption></figure>
+<p>So one counter enumerates the whole run, 4,000 &times; 125,287 = 501 million training tickets, in an order the host chose when it built the table. The real code avoids rescanning the prefix array from zero on each claim: thread 0 keeps the last phase it decoded in <code>cph</code> and walks forward from there, since a block's tickets only increase.</p>
+<p>For a GEMM phase the task index then maps to an output tile. <code>tilesM</code> is the number of tiles along M, so consecutive tickets walk down a column of tiles, which keeps the shared B-operand panel hot in L2:</p>
+<div class="codewrap"><div class="codecap"><span>llm/b200/megakernel/ofa.cu</span><span>lines 139&ndash;150</span></div>
+<pre><code class="language-cpp">__device__ __noinline__ void run_gemm(const PhaseDesc&amp; d, int local, char* smem) {
+  const int tm = local % d.tilesM, tn = local / d.tilesM;
+  switch (d.layout * 8 + d.epi) {
+    case gemm::NN * 8 + gemm::EPI_BF16:  gtile&lt;gemm::NN, gemm::EPI_BF16&gt;(d, tm, tn, smem); break;
+    case gemm::NN * 8 + gemm::EPI_RES:   gtile&lt;gemm::NN, gemm::EPI_RES&gt;(d, tm, tn, smem); break;
+    case gemm::NN * 8 + gemm::EPI_GELU:  gtile&lt;gemm::NN, gemm::EPI_GELU&gt;(d, tm, tn, smem); break;
+    case gemm::NT * 8 + gemm::EPI_BF16:  gtile&lt;gemm::NT, gemm::EPI_BF16&gt;(d, tm, tn, smem); break;
+    case gemm::NT * 8 + gemm::EPI_DGELU: gtile&lt;gemm::NT, gemm::EPI_DGELU&gt;(d, tm, tn, smem); break;
+    case gemm::TN * 8 + gemm::EPI_F32:   gtile&lt;gemm::TN, gemm::EPI_F32&gt;(d, tm, tn, smem); break;
+    default: break;
+  }
+}</code></pre></div>
+<p>The runtime <code>switch</code> turns data (the phase descriptor) into a call to one of six compile-time-specialized templates. This is the megakernel's "instruction decode": every opcode the machine can execute has to be compiled into the one binary, and the descriptor selects among them.</p>
+</section>
+
+<!-- ================================================================== 5 -->
+<section class="col" id="deps">
+<h2><span class="n">5</span>Dependencies without a grid barrier</h2>
+<p>A ticket counter alone is wrong as soon as phases depend on each other. A block could claim a tile of the attention phase while the QKV projection it reads is half written. In the kernel-per-op world the stream's barrier prevented that. We need something finer: wait only for the phases this task actually reads, and only until they are complete.</p>
+<p>Give every phase a <strong>completion counter</strong> <code>done[ph]</code> in global memory. A block that finishes a task increments its phase's counter. A block about to start a task of phase <em>p</em> checks, for each phase <em>q</em> that <em>p</em> depends on, that <code>done[q]</code> has reached <code>ntasks[q]</code>, and sleeps briefly if not.</p>
+<p>The subtle part is memory ordering. The counter going up must <em>mean</em> the data is there. Without ordering, the GPU may make the counter's new value visible to another SM before the tile data written just before it. CUDA's memory model gives two tools for this pattern, called <em>release</em> and <em>acquire</em>:</p>
+<figure><div class="fig"><svg viewBox="0 0 1000 262" role="img" aria-label="Release and acquire handshake between a producer block and a consumer block"><defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--muted)"/></marker></defs><text x="0" y="16" font-size="12" class="mut">producer block (on SM 17) · last task of phase ph</text><rect x="10" y="26" width="210" height="50" rx="5" class="box"/><text x="115.0" y="48.0" text-anchor="middle" font-size="13" font-weight="600" class="">task body</text><text x="115.0" y="64.0" text-anchor="middle" font-size="11" class="mut">256 threads store the tile</text><rect x="250" y="26" width="170" height="50" rx="5" class="box"/><text x="335.0" y="48.0" text-anchor="middle" font-size="13" font-weight="600" class="">__threadfence()</text><text x="335.0" y="64.0" text-anchor="middle" font-size="11" class="mut">every thread</text><rect x="450" y="26" width="150" height="50" rx="5" class="box"/><text x="525.0" y="48.0" text-anchor="middle" font-size="13" font-weight="600" class="">__syncthreads()</text><text x="525.0" y="64.0" text-anchor="middle" font-size="11" class="mut">whole block</text><rect x="630" y="26" width="230" height="50" rx="5" class="box"/><text x="745.0" y="48.0" text-anchor="middle" font-size="13" font-weight="600" class="">atomicAdd(&amp;done[ph], 1)</text><text x="745.0" y="64.0" text-anchor="middle" font-size="11" class="mut">thread 0 · release</text><line x1="220" y1="51" x2="248" y2="51" class="ln" stroke-width="1.4" marker-end="url(#ah)"/><line x1="420" y1="51" x2="448" y2="51" class="ln" stroke-width="1.4" marker-end="url(#ah)"/><line x1="600" y1="51" x2="628" y2="51" class="ln" stroke-width="1.4" marker-end="url(#ah)"/><rect x="630" y="112" width="230" height="30" rx="4" class="boxk"/><text x="745" y="132" text-anchor="middle" font-size="12.5">done[ph]: 575 → 576</text><text x="868" y="132" font-size="11" class="mut">global memory</text><line x1="745" y1="76" x2="745" y2="110" class="ln" stroke-width="1.4" marker-end="url(#ah)"/><text x="0" y="176" font-size="12" class="mut">consumer block (on SM 93) · needs all 576 tasks of ph</text><rect x="10" y="186" width="330" height="50" rx="5" class="box"/><text x="175.0" y="208.0" text-anchor="middle" font-size="13" font-weight="600" class="">ld.acquire  done[ph] &lt; 576</text><text x="175.0" y="224.0" text-anchor="middle" font-size="11" class="mut">thread 0 · __nanosleep(100), poll again</text><rect x="630" y="186" width="230" height="50" rx="5" class="box"/><text x="745.0" y="208.0" text-anchor="middle" font-size="13" font-weight="600" class="">ld.acquire  done[ph] = 576</text><text x="745.0" y="224.0" text-anchor="middle" font-size="11" class="mut">thread 0 · acquire</text><rect x="890" y="186" width="108" height="50" rx="5" class="box"/><text x="944.0" y="208.0" text-anchor="middle" font-size="13" font-weight="600" class="">barrier,</text><text x="944.0" y="224.0" text-anchor="middle" font-size="11" class="mut">then read tile</text><line x1="340" y1="211" x2="628" y2="211" class="ln" stroke-width="1.4" stroke-dasharray="4 4" marker-end="url(#ah)"/><text x="484" y="204" text-anchor="middle" font-size="11" class="mut">time</text><line x1="745" y1="142" x2="745" y2="184" class="ln" stroke-width="1.4" marker-end="url(#ah)"/><line x1="860" y1="211" x2="888" y2="211" class="ln" stroke-width="1.4" marker-end="url(#ah)"/></svg></div><figcaption><b>Release and acquire.</b> Fences and the block barrier make every thread's tile writes precede thread 0's increment. On the other side, the acquire load and the barrier make the whole consumer block's reads follow the observation that the counter reached its target.</figcaption></figure>
+<pre><code class="language-cpp">__device__ __forceinline__ int ld_acquire(const int* p) {
+  int v;
+  asm volatile("ld.acquire.gpu.global.s32 %0, [%1];" : "=r"(v) : "l"(p) : "memory");
+  return v;
+}
+
+// --- producer: after the task body (all 256 threads wrote parts of the output tile)
+__threadfence();                        // each thread: my earlier writes are ordered before my later ones, GPU-wide
+__syncthreads();                        // every thread of the block has passed its fence
+if (threadIdx.x == 0) atomicAdd(&amp;done[ph], 1);   // publish: one more task of this phase is complete
+
+// --- consumer: thread 0, before the task body
+while (ld_acquire(&amp;done[dep]) &lt; ntasks[dep]) __nanosleep(100);
+__syncthreads();                        // the rest of the block waits on thread 0, then reads the inputs</code></pre>
+<p>Read the producer side as a chain. Each thread's <code>__threadfence()</code> orders that thread's tile writes before anything it does afterwards. The barrier then orders every thread's post-fence point before thread 0's next instruction. So thread 0's <code>atomicAdd</code> comes after all 256 threads' writes, as seen from any SM. On the consumer side, the <code>.acquire</code> load forbids later loads from being performed before it, and the barrier extends that guarantee from thread 0 to the whole block.</p>
+<p>Why not just use <code>volatile</code> loads for the counter? Because <code>volatile</code> only stops the compiler from caching the value in a register; it does not stop the hardware from performing the block's subsequent data loads early. An acquire load does. The repo uses <code>volatile</code> only where ordering does not matter, such as the ticket counter in the CAS path and the <code>finished</code> flag.</p>
+<div class="note"><span class="lbl">Caches</span>
+<p>Global loads normally go through the SM's L1, and L1 is not coherent across SMs. Inputs produced by another SM in this same launch must not be served from a stale L1 line. The library tasks read such data with <code>cp.async.cg</code> (cache at L2 only), <code>__ldcg</code>, or <code>ld.global.L1::no_allocate</code>. <code>__ldg</code> (the read-only path) appears only for tables that never change during the run, like <code>prefix</code> and <code>deps</code>.</p>
+</div>
+<p>The barrier between ops is gone. In its place is a handshake between exactly the tasks that share data, and a task whose inputs are final can start while unrelated phases are still running.</p>
+</section>
+
+<!-- ================================================================== 6 -->
+<section class="col" id="monotonic">
+<h2><span class="n">6</span>Counters that never reset</h2>
+<p>A training run repeats the same 278 phases 4,000 times. Resetting <code>done[]</code> at the end of each step would need a grid-wide barrier to know when it is safe, which is exactly what we are trying to avoid. The repo never resets them. Phase <em>q</em>'s counter keeps climbing: it reads <code>ntasks[q]</code> after step 0, <code>2 &middot; ntasks[q]</code> after step 1, and so on. A task of step <em>s</em> that needs phase <em>q</em> of the <em>same</em> step waits for</p>
+<pre><code class="language-cpp">need = ntasks[q] * (step + 1);</code></pre>
+<p>That also gives dependencies <strong>across steps</strong> for free. Each dependency is stored as a pair <code>(phase, delta)</code>, and the target becomes <code>ntasks[q] * (step + 1 + delta)</code>. With <code>delta = -1</code> a task waits for phase <em>q</em> of the <em>previous</em> step. At step 0 the target is zero and the check is skipped (<code>need &gt; 0</code>).</p>
+<p>This is how step <em>s</em>+1 begins before step <em>s</em> has fully ended. The AdamW phase for layer <em>l</em> depends only on layer <em>l</em>'s gradient phases, so the optimizer for layer 11 can run while the backward pass is still working through the lower layers. In the other direction, layer <em>l</em>'s first forward phase of the next step carries the dependency <code>(adamw L<em>l</em>, -1)</code> and nothing else from the previous step, so it waits for that one layer's update, not for the whole optimizer pass. No global "step finished" event stands between two steps.</p>
+<p>The <code>Builder</code> on the host records dependencies in exactly this form, with a flat <code>deps</code> array and per-phase offsets so the device can walk them with no pointers:</p>
+<div class="codewrap"><div class="codecap"><span>llm/b200/megakernel/ofa.cu</span><span>lines 352&ndash;362</span></div>
+<pre><code class="language-cpp">struct Builder {
+  std::vector&lt;PhaseDesc&gt; ph; std::vector&lt;int&gt; dep_off, dep_cnt, ntasks; std::vector&lt;int2&gt; deps; std::vector&lt;std::string&gt; names;
+  int add(const std::string&amp; name, PhaseDesc d, std::vector&lt;int&gt; after, std::vector&lt;int2&gt; prev = {}) {
+    dep_off.push_back((int)deps.size());
+    for (int a : after) if (a &gt;= 0) deps.push_back(make_int2(a, 0));
+    for (auto p : prev) deps.push_back(p);
+    dep_cnt.push_back((int)deps.size() - dep_off.back());
+    ph.push_back(d); ntasks.push_back(d.ntasks); names.push_back(name);
+    return (int)ph.size() - 1;
+  }
+};</code></pre></div>
+<p>Since a phase can only depend on phases that were added before it (<code>add</code> returns the new index, and you can only pass indices you already have), the phase table is in topological order by construction. That property is about to matter a lot.</p>
+</section>
+
+<!-- ================================================================== 7 -->
+<section class="col" id="deadlock">
+<h2><span class="n">7</span>Why it cannot deadlock</h2>
+<p>Combine the ticket with the dependency wait and an obvious worry appears. Block A claims ticket 1,000 and starts waiting on a phase whose last task is ticket 990. Block B holds ticket 990 but is itself waiting on something. Can the waits form a cycle?</p>
+<p>They cannot, for two reasons that the design arranges deliberately:</p>
+<ol>
+<li><strong>Every dependency points to a lower ticket.</strong> Phases within a step are in topological order, and cross-step dependencies use <code>delta = -1</code>, which points into the previous step's range. So a task only ever waits on tasks with smaller ticket numbers.</li>
+<li><strong>Every claimed ticket belongs to a running block.</strong> Tickets are handed out in increasing order, so if ticket 1,000 has been claimed then 0 to 999 have been claimed too, each by a block that is resident (that is the one-wave rule from section 2).</li>
+</ol>
+<p>Now take the <em>lowest</em> ticket whose task has not finished. Everything it depends on has a lower number, so it has finished. That task is therefore running, not waiting, and will complete. Then the next-lowest unfinished ticket is in the same position. By induction every claimed task completes. No cycle is possible because waits only point downward.</p>
+<p>This argument is what allows the cheapest possible claim: an unconditional <code>atomicAdd</code>, taken <em>before</em> checking whether the task is ready. The repo did not start there. The first version only claimed tickets that were already ready, with a compare-and-swap:</p>
+<div class="codewrap"><div class="codecap"><span>llm/b200/megakernel/ofa.cu</span><span>lines 260&ndash;281 (the CAS path, kept under <code>#else</code>)</span></div>
+<pre><code class="language-cpp">for (;;) {
+  if (job_id == 1 &amp;&amp; ld_vol(C.finished)) { res = -2; break; }
+  const unsigned g = ld_vol(J.ticket);
+  if (g &gt;= total) { res = -2; break; }
+  step = (int)(g / (unsigned)J.tps); const int r = (int)(g - (unsigned)step * (unsigned)J.tps);
+  if (r &lt; __ldg(J.prefix + cph)) cph = 0;
+  while (r &gt;= __ldg(J.prefix + cph + 1)) cph++;
+  ph = cph;
+  bool ready = (step == rstep &amp;&amp; ph == rph);
+  if (!ready) {
+    ... check every dependency with ld_acq ...
+  }
+  if (!ready) { __nanosleep(job_id == 1 ? 100 : 200); continue; }
+  if (atomicCAS(const_cast&lt;unsigned*&gt;(J.ticket), g, g + 1) == g) { local = r - __ldg(J.prefix + ph); break; }
+}</code></pre></div>
+<p>This is correct, and it never parks a block on an unready task. But every block reads the same counter, and only one of the blocks that read value <em>g</em> wins the CAS; all the others go around again. The research log measured the result: the CAS loop serialized at about 1.9 claims per microsecond. At 125,000 tasks per step that is 66 ms of pure claiming per step, longer than the step itself. Switching to fetch-add made the whole training loop about twice as fast (<code>llm/megakernel/MERGE.md</code>, item 1).</p>
+<p>Here is the production claim, the heart of the scheduler:</p>
+<div class="codewrap"><div class="codecap"><span>llm/b200/megakernel/ofa.cu</span><span>lines 220&ndash;258, <code>job_loop</code></span></div>
+<pre><code class="language-cpp">__device__ void job_loop(const Ctx&amp; C, const Job&amp; J, int job_id, char* smem) {
+  __shared__ volatile int s_sel[4];
+  const int tid = threadIdx.x;
+  int cph = 0, rstep = -1, rph = -1;                    // thread 0: phase cache and "this (step, phase) is known ready"
+  u64 busy = 0;
+  const unsigned total = (unsigned)J.limit * (unsigned)J.tps;
+  tg::block_init();                                     // tcgen05 backend: this block's TMEM columns, once (no-op for mma.sync)
+  for (;;) {
+    if (tid == 0) {
+      int res = 0, step = 0, ph = 0, local = 0;
+#if CLAIM_FETCHADD
+      // Unconditional fetch-add claim: never retries (the CAS version serialised all blocks at ~2 claims/us). Dependencies always point to
+      // LOWER tickets (phases are topologically ordered, step s+1 depends on step s), so a block that holds a claim while its inputs are
+      // not finished cannot deadlock: the lowest unfinished ticket always has all its dependencies finished.
+      if (job_id == 1 &amp;&amp; ld_vol(C.finished)) { res = -2; }
+      else {
+        const unsigned g = atomicAdd(const_cast&lt;unsigned*&gt;(J.ticket), 1u);
+        if (g &gt;= total) res = -2;
+        else {
+          step = (int)(g / (unsigned)J.tps); const int r = (int)(g - (unsigned)step * (unsigned)J.tps);
+          if (r &lt; __ldg(J.prefix + cph)) cph = 0;
+          while (r &gt;= __ldg(J.prefix + cph + 1)) cph++;
+          ph = cph; local = r - __ldg(J.prefix + ph);
+          if (!(step == rstep &amp;&amp; ph == rph)) {
+            const int off = __ldg(J.dep_off + ph), cnt = __ldg(J.dep_cnt + ph);
+            for (;;) {
+              bool ready = true;
+              for (int k = 0; k &lt; cnt &amp;&amp; ready; k++) {
+                const int2 e = __ldg(J.deps + off + k);
+                const int need = __ldg(J.ntasks + e.x) * (step + 1 + e.y);
+                if (need &gt; 0 &amp;&amp; ld_acq(J.done + e.x) &lt; need) ready = false;
+              }
+              if (ready) { rstep = step; rph = ph; break; }
+              if (job_id == 1 &amp;&amp; ld_vol(C.finished)) { res = -2; break; }
+              __nanosleep(job_id == 1 ? 60 : 100);
+            }
+          }
+        }
+      }
+#else
+      ...</code></pre></div>
+<p>Every piece of the previous sections is here: the one-thread claim, the ticket decode with the phase cache, the <code>(phase, delta)</code> targets, the acquire loads, the sleep. One more optimization is visible: <code>rstep</code> and <code>rph</code> remember the last (step, phase) this block found ready. Counters only grow, so once a phase's dependencies are satisfied for a given step they stay satisfied, and a block that claims several tasks of the same phase in a row checks only once. The decode job (job 1) also polls a <code>finished</code> flag, because it has no natural end; it stops when training does.</p>
+<p>The second half of the loop runs the task and signals completion:</p>
+<div class="codewrap"><div class="codecap"><span>llm/b200/megakernel/ofa.cu</span><span>lines 283&ndash;314</span></div>
+<pre><code class="language-cpp">      s_sel[0] = res; s_sel[1] = step; s_sel[2] = ph; s_sel[3] = local;
+    }
+    __syncthreads();
+    const int res = s_sel[0];
+    if (res &lt; 0) break;
+    const int step = s_sel[1], ph = s_sel[2], local = s_sel[3];
+    __syncthreads();
+    const PhaseDesc&amp; d = J.ph[ph];
+    u64 t0 = 0;
+    if (tid == 0) t0 = gtimer();
+    if (job_id == 0) run_train_task(C, d, local, step, smem);
+    else decode::run_task&lt;DC&gt;(C.dp, d.i0, local, smem);
+    __threadfence();
+    __syncthreads();
+    if (tid == 0) {
+      const u64 t1 = gtimer();
+      busy += t1 - t0;
+      if (job_id == 0) {
+        atomicAdd(C.phase_busy + ph, t1 - t0);
+        if (step == C.prof_step) { atomicMin(C.phase_first + ph, t0); atomicMax(C.phase_last + ph, t1); }
+      }
+      const int old = atomicAdd(J.done + ph, 1);
+      if (job_id == 0 &amp;&amp; ph == J.last_ph &amp;&amp; old == __ldg(J.ntasks + ph) * (step + 1) - 1) {     // last task of the step
+        C.step_done[step] = t1;
+        if (C.live) C.live-&gt;steps = (unsigned)(step + 1);
+        if (step == J.limit - 1) { *C.t_end = t1; __threadfence(); *reinterpret_cast&lt;volatile int*&gt;(C.finished) = 1; }
+      }
+    }
+  }
+  tg::block_exit();
+  if (tid == 0) C.blk_busy[blockIdx.x * 2 + job_id] = busy;
+}</code></pre></div>
+<p>The return value of <code>atomicAdd</code> is used to detect the last task of a step without another counter: if the old value was one less than the target, this block just completed the step. It stamps the time from <code>%globaltimer</code> (a GPU-wide nanosecond clock), and after the final step it raises <code>finished</code>, which stops the decode and Doom loops. The profiler is just more atomics: per-phase busy time and the first-start / last-end of each phase at one chosen step.</p>
+</section>
+
+<!-- ================================================================== 8 -->
+<section class="wide" id="sim">
+<h2 class="col"><span class="n">8</span>Barriers against counters, simulated</h2>
+<div class="col">
+<p>The scheduler is complete, so it is worth seeing what it buys. Below is a toy training step with the same shape as the real one: three layers of forward, a head, a backward pass where each layer has an input-gradient chain (dX) and an independent weight-gradient branch (dW), and one AdamW phase per layer. The next step's layer <em>l</em> forward depends on layer <em>l</em>'s AdamW of the previous step, as in section 6.</p>
+<p>The top chart runs it as one kernel per phase: phases in stream order, a launch gap between them, every phase waiting for the previous one. The bottom chart runs the same tasks, with the same durations, through the megakernel's rules: fetch-add tickets in table order, per-phase counters, no barriers. Each row is a block; each bar is a task.</p>
+</div>
+<div class="sim" id="simbox">
+  <h4>Three training steps, toy graph</h4>
+  <div class="controls">
+    <label for="s-blocks">Blocks <input id="s-blocks" type="range" min="4" max="16" value="8"><output id="o-blocks">8</output></label>
+    <label for="s-gap">Launch gap (&micro;s) <input id="s-gap" type="range" min="0" max="8" value="3"><output id="o-gap">3</output></label>
+    <label for="s-jit">Duration jitter <input id="s-jit" type="range" min="0" max="60" value="30"><output id="o-jit">30%</output></label>
+    <button id="s-seed" type="button">New random durations</button>
+  </div>
+  <div class="gantt"><div class="gl"><b>Kernel per phase</b><span id="t-kpo"></span></div><canvas id="c-kpo" width="900" height="160" aria-label="Gantt chart, kernel per phase"></canvas></div>
+  <div class="gantt"><div class="gl"><b>Megakernel</b><span id="t-mk"></span></div><canvas id="c-mk" width="900" height="160" aria-label="Gantt chart, megakernel"></canvas></div>
+  <div class="legend">
+    <span><i style="background:var(--op-fwd)"></i>forward</span>
+    <span><i style="background:var(--op-head)"></i>head + loss</span>
+    <span><i style="background:var(--op-dx)"></i>backward dX chain</span>
+    <span><i style="background:var(--op-dw)"></i>backward dW</span>
+    <span><i style="background:var(--op-adam)"></i>AdamW</span>
+  </div>
+  <div class="verdict" id="verdict"></div>
+</div>
+<div class="col">
+<p>Three things to try. Set the launch gap to zero: the megakernel still wins, because the remaining gain is the tails being filled by the dW branch and AdamW. Drop the blocks to 4: phases have more tasks than blocks, tails shrink relative to the work, and the gap narrows. Raise the jitter: per-phase barriers wait for the slowest task, and the dynamic claim hides it. These are the same effects the real kernel gets on a much larger graph.</p>
+<p>What the toy hides is that the megakernel pays for claims and waits it does not show, and that the real tasks contend for memory bandwidth. Section 15 has the measured numbers.</p>
+</div>
+</section>
+
+<!-- ================================================================== 9 -->
+<section class="col" id="graph">
+<h2><span class="n">9</span>Compiling a GPT into a phase table</h2>
+<p>The runtime is generic. All model knowledge lives in the host code that builds the phase table, which is effectively a compiler from "GPT-2-style transformer, these sizes" to a list of phases. The model is 12 layers, width 768, 12 heads, context 512, a 100,352-entry vocabulary (cl100k padded), 8 sequences per step: <em>N</em> = 4,096 tokens.</p>
+<p>The forward pass of one layer is seven phases, each depending on the one before:</p>
+<div class="codewrap"><div class="codecap"><span>llm/b200/megakernel/ofa.cu</span><span>lines 557&ndash;567</span></div>
+<pre><code class="language-cpp">for (int l = 0; l &lt; L; l++) {
+  ...
+  PhaseDesc d = mk(K_LN_FWD, (N + 15) / 16); d.p[0] = ln1[l]; ... int a = Bd.add(nm, d, {cur}, pv(1)); p_ln1f[l] = a;
+  d = mkgemm(gemm::NN, gemm::EPI_BF16, ln1[l], D, wq, 3 * D, qkv[l], 3 * D, nullptr, 0, N, 3 * D, D, 0);   a = Bd.add(nm, d, {a});
+  d = mk(K_ATT_FWD, B * H * (T / 64)); d.p[0] = qkv[l]; d.p[1] = ob[l]; d.p[2] = lse[l];                 a = Bd.add(nm, d, {a});
+  d = mkgemm(gemm::NN, gemm::EPI_RES, ob[l], D, wo, D, hb_[l], D, xs[l], D, N, D, D, 0);                 a = Bd.add(nm, d, {a});
+  d = mk(K_LN_FWD, (N + 15) / 16); d.p[0] = ln2[l]; ...                                                  a = Bd.add(nm, d, {a});
+  d = mkgemm(gemm::NN, gemm::EPI_GELU, ln2[l], D, wu, FF, uact[l], FF, upre[l], FF, N, FF, D, 0);        a = Bd.add(nm, d, {a});
+  d = mkgemm(gemm::NN, gemm::EPI_RES, uact[l], FF, wd, D, xs[l + 1], D, hb_[l], D, N, D, FF, 0);         cur = Bd.add(nm, d, {a});
+}</code></pre></div>
+<p>Notice what is <em>not</em> a phase. The residual add is fused into the epilogue of the output projections (<code>EPI_RES</code>); the GELU is fused into the up-projection (<code>EPI_GELU</code>, which also saves the pre-activation for backward). The <code>pv(1)</code> on the first LayerNorm is a placeholder for the cross-step dependency on this layer's AdamW, patched in once the AdamW phases exist.</p>
+<p>Every activation and gradient buffer is <strong>per layer</strong> (<code>ln1[l]</code>, <code>qkv[l]</code>, <code>dqkv[l]</code>, ...). That costs memory (14.2 GB used on the B200) but removes write-after-read hazards: if layer 3 and layer 4 shared a scratch buffer, a fast task of layer 4 could overwrite data a slow task of layer 3 is still reading, and you would need extra dependency edges to prevent it. With private buffers the only edges are the true data dependencies.</p>
+<p>The backward pass is where overlap appears. For each layer, the input-gradient chain (dX) is a sequence, but each weight gradient (dW) hangs off it as a side branch that nothing downstream needs until AdamW. The figure shows one layer:</p>
+<figure><div class="fig"><svg viewBox="0 0 1000 318" role="img" aria-label="Dependency graph of one transformer layer backward pass and its AdamW update"><defs><marker id="al" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--muted)"/></marker></defs><text x="0" y="22" font-size="12" class="mut">step s · layer l · input-gradient (dX) chain</text><line x1="2" y1="57.0" x2="38" y2="57.0" class="ln" stroke-width="1.4" marker-end="url(#al)"/><rect x="40" y="40" width="104" height="34" rx="5" class="o-dx"/><text x="92.0" y="61.5" text-anchor="middle" font-size="13" class="onfill">dpre</text><rect x="158" y="40" width="104" height="34" rx="5" class="o-dx"/><text x="210.0" y="61.5" text-anchor="middle" font-size="13" class="onfill">dln2</text><line x1="144" y1="57.0" x2="156" y2="57.0" class="ln" stroke-width="1.4" marker-end="url(#al)"/><rect x="276" y="40" width="104" height="34" rx="5" class="o-dx"/><text x="328.0" y="61.5" text-anchor="middle" font-size="13" class="onfill">ln2 bwd</text><line x1="262" y1="57.0" x2="274" y2="57.0" class="ln" stroke-width="1.4" marker-end="url(#al)"/><rect x="394" y="40" width="104" height="34" rx="5" class="o-dx"/><text x="446.0" y="61.5" text-anchor="middle" font-size="13" class="onfill">dO</text><line x1="380" y1="57.0" x2="392" y2="57.0" class="ln" stroke-width="1.4" marker-end="url(#al)"/><rect x="512" y="40" width="104" height="34" rx="5" class="o-dx"/><text x="564.0" y="61.5" text-anchor="middle" font-size="13" class="onfill">attn prep</text><line x1="498" y1="57.0" x2="510" y2="57.0" class="ln" stroke-width="1.4" marker-end="url(#al)"/><rect x="630" y="40" width="104" height="34" rx="5" class="o-dx"/><text x="682.0" y="61.5" text-anchor="middle" font-size="13" class="onfill">attn bwd</text><line x1="616" y1="57.0" x2="628" y2="57.0" class="ln" stroke-width="1.4" marker-end="url(#al)"/><rect x="748" y="40" width="104" height="34" rx="5" class="o-dx"/><text x="800.0" y="61.5" text-anchor="middle" font-size="13" class="onfill">dln1</text><line x1="734" y1="57.0" x2="746" y2="57.0" class="ln" stroke-width="1.4" marker-end="url(#al)"/><rect x="866" y="40" width="104" height="34" rx="5" class="o-dx"/><text x="918.0" y="61.5" text-anchor="middle" font-size="13" class="onfill">ln1 bwd</text><line x1="852" y1="57.0" x2="864" y2="57.0" class="ln" stroke-width="1.4" marker-end="url(#al)"/><text x="918.0" y="34" text-anchor="middle" font-size="11" class="mut">→ layer l−1</text><text x="512" y="136" font-size="12" class="mut">weight gradients only</text><text x="512" y="151" font-size="12" class="mut">feed this layer’s AdamW</text><rect x="40" y="122" width="104" height="34" rx="5" class="o-dw"/><text x="92.0" y="143.5" text-anchor="middle" font-size="13" class="onfill">dWdown</text><path d="M20,57.0 C20,112 72.0,92 92.0,120" class="ln" stroke-width="1.4" marker-end="url(#al)"/><rect x="158" y="122" width="104" height="34" rx="5" class="o-dw"/><text x="210.0" y="143.5" text-anchor="middle" font-size="13" class="onfill">dWup</text><path d="M92.0,74 C92.0,108 210.0,82 210.0,120" class="ln" stroke-width="1.4" marker-end="url(#al)"/><rect x="276" y="122" width="104" height="34" rx="5" class="o-dw"/><text x="328.0" y="143.5" text-anchor="middle" font-size="13" class="onfill">dgamma2</text><line x1="328.0" y1="74" x2="328.0" y2="120" class="ln" stroke-width="1.4" marker-end="url(#al)"/><rect x="394" y="122" width="104" height="34" rx="5" class="o-dw"/><text x="446.0" y="143.5" text-anchor="middle" font-size="13" class="onfill">dWo</text><path d="M328.0,74 C328.0,108 446.0,82 446.0,120" class="ln" stroke-width="1.4" marker-end="url(#al)"/><rect x="748" y="122" width="104" height="34" rx="5" class="o-dw"/><text x="800.0" y="143.5" text-anchor="middle" font-size="13" class="onfill">dWqkv</text><path d="M682.0,74 C682.0,108 800.0,82 800.0,120" class="ln" stroke-width="1.4" marker-end="url(#al)"/><rect x="866" y="122" width="104" height="34" rx="5" class="o-dw"/><text x="918.0" y="143.5" text-anchor="middle" font-size="13" class="onfill">dgamma1</text><line x1="918.0" y1="74" x2="918.0" y2="120" class="ln" stroke-width="1.4" marker-end="url(#al)"/><rect x="40" y="204" width="930" height="34" rx="5" class="o-adam"/><text x="505.0" y="225.5" text-anchor="middle" font-size="13" class="onfill">adamw for layer l  ·  109 tasks of 65,536 parameters  ·  waits for the six dW phases and ln1 bwd</text><line x1="92.0" y1="156" x2="92.0" y2="202" class="ln" stroke-width="1.4" marker-end="url(#al)"/><line x1="210.0" y1="156" x2="210.0" y2="202" class="ln" stroke-width="1.4" marker-end="url(#al)"/><line x1="328.0" y1="156" x2="328.0" y2="202" class="ln" stroke-width="1.4" marker-end="url(#al)"/><line x1="446.0" y1="156" x2="446.0" y2="202" class="ln" stroke-width="1.4" marker-end="url(#al)"/><line x1="800.0" y1="156" x2="800.0" y2="202" class="ln" stroke-width="1.4" marker-end="url(#al)"/><line x1="918.0" y1="156" x2="918.0" y2="202" class="ln" stroke-width="1.4" marker-end="url(#al)"/><line x1="960" y1="74" x2="960" y2="202" class="ln" stroke-width="1.4" stroke-dasharray="4 4" marker-end="url(#al)"/><rect x="630" y="274" width="340" height="34" rx="5" class="boxk"/><text x="800.0" y="295.5" text-anchor="middle" font-size="13" class="">step s+1 · layer l · ln1 (forward)</text><line x1="690" y1="238" x2="690" y2="272" class="ln" stroke-width="1.4" marker-end="url(#al)"/><text x="700" y="262" font-size="12" class="t-acc">dependency (adamw L l, −1)</text><text x="40" y="295" font-size="12" class="mut">the next step’s layer l waits for this layer only</text></svg></div><figcaption><b>One layer of the backward pass.</b> The dX chain (teal) is sequential and carries the gradient down to layer <em>l</em>&minus;1. The weight gradients (green) branch off it and only feed this layer’s AdamW (orange), so they fill gaps in the chain. The next step's forward for this layer waits on that one AdamW phase, through a <code>delta = -1</code> dependency.</figcaption></figure>
+<p>The AdamW phases are then built per layer group, each depending only on that layer's gradient phases, and the embedding table's update is fused into its own backward task (each of its 784 tasks owns 128 vocabulary rows, so the gradient rows are final and can be applied immediately). Finally the cross-step placeholders are patched:</p>
+<div class="codewrap"><div class="codecap"><span>llm/b200/megakernel/ofa.cu</span><span>lines 637&ndash;641</span></div>
+<pre><code class="language-cpp">if (fuse_opt) {                                            // step s+1 waits only for what it actually reads/overwrites from step s
+  Bd.deps[Bd.dep_off[p_data]] = make_int2(fuse_wte ? p_ewte : p_wte_opt, -1);
+  Bd.deps[Bd.dep_off[p_embed] + 1] = make_int2(fuse_wte ? p_ewte : p_wte_opt, -1); Bd.deps[Bd.dep_off[p_embed] + 2] = make_int2(p_wpe_opt, -1);
+  for (int l = 0; l &lt; L; l++) Bd.deps[Bd.dep_off[p_ln1f[l]] + 1] = make_int2(p_group[l], -1);
+} else Bd.deps[Bd.dep_off[p_data]] = make_int2(last_ph, -1);   // step s+1 starts after step s finished</code></pre></div>
+<p>Read the comment on the first line: the next step waits only for what it reads or overwrites. The data-loading phase of step <em>s</em>+1 overwrites <code>tok_in</code>, which the embedding backward of step <em>s</em> reads, so it waits for that. Layer <em>l</em>'s forward reads layer <em>l</em>'s weights, so it waits for layer <em>l</em>'s AdamW. Nothing else. The research notes measured this overlap at about 1 ms per step on this model.</p>
+<p>The totals, recomputed from the builder and matching the run log exactly:</p>
+<div class="tablewrap"><table>
+<thead><tr><th>Part of one step</th><th class="num">Phases</th><th class="num">Tasks</th></tr></thead>
+<tbody>
+<tr><td>data load + embedding</td><td class="num">2</td><td class="num">264</td></tr>
+<tr><td>forward, per layer (&times; 12)</td><td class="num">7</td><td class="num">3,008</td></tr>
+<tr><td>final LN, logits GEMM, cross-entropy, loss mean</td><td class="num">4</td><td class="num">26,369</td></tr>
+<tr><td>head backward (dX, dW<sub>te</sub>, LN<sub>f</sub>)</td><td class="num">4</td><td class="num">5,155</td></tr>
+<tr><td>backward, per layer (&times; 12)</td><td class="num">14</td><td class="num">4,598</td></tr>
+<tr><td>embedding backward (+ fused AdamW of w<sub>te</sub>), w<sub>pe</sub></td><td class="num">2</td><td class="num">912</td></tr>
+<tr><td>AdamW: w<sub>pe</sub> + 12 layer groups + step barrier</td><td class="num">14</td><td class="num">1,315</td></tr>
+<tr><td><b>total</b></td><td class="num"><b>278</b></td><td class="num"><b>125,287</b></td></tr>
+</tbody></table></div>
+<p>The logits GEMM alone is 25,088 tiles (32 &times; 784): the vocabulary is the largest dimension in this model by far. One more scheduling detail lives in the task bodies rather than the table. Causal attention tiles are uneven (a late query tile attends to many more keys than an early one), so the forward pass maps task indices so the heaviest tiles are claimed first:</p>
+<div class="codewrap"><div class="codecap"><span>llm/b200/megakernel/ofa.cu</span><span>lines 169&ndash;173</span></div>
+<pre><code class="language-cpp">case K_ATT_FWD: {                                        // heavy (late) query tiles first
+  const int qt = QT - 1 - local / BH, bh = local % BH;
+  attn::attn_fwd_tile&lt;T, H&gt;((const bf16*)d.p[0], (bf16*)d.p[1], (float*)d.p[2], bh / H, bh % H, qt, smem);
+  break;
+}</code></pre></div>
+<p>This is the classic longest-processing-time-first rule: start the long jobs early so the phase does not end with one long task running alone.</p>
+</section>
+
+<!-- ================================================================== 10 -->
+<section class="col" id="bodies">
+<h2><span class="n">10</span>The task bodies</h2>
+<p>The scheduler gives each task a block of 256 threads, a shared-memory buffer and nothing else. The task libraries live in <code>llm/gemm</code>, <code>llm/attention</code>, <code>llm/elementwise</code> and <code>llm/decode</code>, each with its own stand-alone test against a PyTorch reference.</p>
+<h3>GEMM: one 128 &times; 128 tile</h3>
+<p>The A100 GEMM (<code>llm/gemm/gemm.cuh</code>) is a conventional tensor-core tile written for this contract. Eight warps in a 2 &times; 4 arrangement each own a 64 &times; 32 piece of the output, computed with <code>mma.sync.m16n8k16</code> in bf16 with fp32 accumulation. Operands stream through a 4-stage <code>cp.async</code> pipeline with K-chunks of 32, stored in an XOR-swizzled shared-memory layout so that both the async copies and the <code>ldmatrix</code> reads are free of bank conflicts:</p>
+<div class="codewrap"><div class="codecap"><span>llm/gemm/gemm.cuh</span><span>tile load into swizzled shared memory</span></div>
+<pre><code class="language-cpp">//  K-contiguous  (tile stored [mn][k], 64 B rows): byte = mn*64 + ((k/8) ^ ((mn&gt;&gt;1)&amp;3))*16 + (k%8)*2
+//  MN-contiguous (tile stored [k][mn], 256 B rows): byte = k*256 + ((mn/8) ^ (k&amp;7))*16 + (mn%8)*2
+template &lt;bool KC&gt;
+__device__ __forceinline__ void load_tile(uint32_t sbase, const bf16* g, int ld, int mn0, int k0, int tid) {
+#pragma unroll
+  for (int i = 0; i &lt; 2; i++) {
+    int c = tid + i * THREADS;
+    if (KC) {
+      int row = c &gt;&gt; 2, kc = c &amp; 3;
+      cp_async16(sbase + row * 64 + ((kc ^ ((row &gt;&gt; 1) &amp; 3)) &lt;&lt; 4), g + (size_t)(mn0 + row) * ld + k0 + kc * 8);
+    } else {
+      int k = c &gt;&gt; 4, mc = c &amp; 15;
+      cp_async16(sbase + k * 256 + ((mc ^ (k &amp; 7)) &lt;&lt; 4), g + (size_t)(k0 + k) * ld + mn0 + mc * 8);
+    }
+  }
+}</code></pre></div>
+<p>Three layouts cover every matmul in training: <code>NN</code> for forward linears (<em>Y</em> = <em>XW</em>), <code>NT</code> for input gradients (<em>dX</em> = <em>dY W</em><sup>T</sup>) and for the tied logits, and <code>TN</code> for weight gradients (<em>dW</em> = <em>X</em><sup>T</sup><em>dY</em>, reducing over the 4,096 tokens). Five epilogues fuse the elementwise work that would otherwise be separate phases:</p>
+<div class="tablewrap"><table>
+<thead><tr><th>Epilogue</th><th>Computes</th><th>Used by</th></tr></thead>
+<tbody>
+<tr><td><code>EPI_BF16</code></td><td>C = acc</td><td>QKV, logits, dX GEMMs</td></tr>
+<tr><td><code>EPI_RES</code></td><td>C = acc + R (R may alias C)</td><td>attention output and MLP down projections</td></tr>
+<tr><td><code>EPI_GELU</code></td><td>aux = acc; C = gelu(aux)</td><td>MLP up projection</td></tr>
+<tr><td><code>EPI_DGELU</code></td><td>C = acc &middot; gelu&prime;(aux)</td><td>backward through the MLP activation</td></tr>
+<tr><td><code>EPI_F32</code></td><td>C (+)= acc in fp32</td><td>weight gradients, written straight into the fp32 gradient buffer</td></tr>
+</tbody></table></div>
+<p>The GEMM has no atomics and a fixed reduction order over K, so it is deterministic. That is true of every task in the repo: there are no floating-point atomics anywhere in training. The practical payoff is large. The loss curve is bit-identical whether the kernel runs with 85 or 116 training SMs, with or without Doom, with the per-layer AdamW overlap on or off, and with the <code>mma.sync</code> or <code>tcgen05</code> GEMM. When you change the scheduler you can diff the loss file and know immediately whether you broke synchronization.</p>
+<h3>Attention</h3>
+<p>Attention is flash-style: a forward task is one (sequence, head, 64-query tile), with an online softmax over 64-key blocks, and it saves the log-sum-exp for backward. The backward is split into a prep phase (<em>D</em> = rowsum(<em>dO</em> &#8728; <em>O</em>)) and one phase holding two task kinds: the first 768 tasks each compute <em>dK</em>, <em>dV</em> for one key tile, the next 768 each compute <em>dQ</em> for one query tile. Splitting dQ out this way means no task has to accumulate into another task's output, which is what lets the backward avoid atomics.</p>
+<h3>Elementwise</h3>
+<p>LayerNorm forward and backward take 16 rows per task; cross-entropy takes 4 rows of 100,352 logits each and writes per-row losses that a 1-task phase averages; AdamW takes 65,536 parameters per task, updates the fp32 master weights, the two moments, and writes the bf16 copy that the GEMMs (and the server) read. LayerNorm's gamma gradient is a two-level reduction: each backward task writes a partial sum for its 16 rows, and a 3-task phase reduces the 256 partials per column in a fixed order.</p>
+<div class="note"><span class="lbl">One binary, one register budget</span>
+<p>Every one of these bodies is compiled into the same kernel. The register allocator assigns one count to the whole kernel, so the leanest LayerNorm task runs with the GEMM's 128 registers. <code>run_gemm</code> is marked <code>__noinline__</code> so its large body is compiled as a separate function, which keeps the scheduler loop from inheriting its register pressure and spills.</p>
+</div>
+</section>
+
+<!-- ================================================================== 11 -->
+<section class="col" id="partition">
+<h2><span class="n">11</span>Three programs, one grid</h2>
+<p>So far there is one job. The kernel runs three: training, serving and Doom. The simplest way to share a GPU between jobs inside one kernel would be one queue with priorities: always take a Doom task if one is ready, else a decode task, else training. The small demo in <code>a100-demo/</code> does exactly that. It does not scale to this model, for one reason: <strong>a task cannot be preempted.</strong> Once a block starts a training GEMM tile with K = 100,352 it runs to the end. A Doom frame that becomes due in the meantime waits. With long tasks, priorities alone cannot give a frame deadline or a steady token rate.</p>
+<p>So the LLM kernel partitions the GPU by <strong>physical SM</strong>. Each block reads the hardware register <code>%smid</code> and picks its role:</p>
+<div class="codewrap"><div class="codecap"><span>llm/b200/megakernel/ofa.cu</span><span>lines 316&ndash;326, the kernel entry</span></div>
+<pre><code class="language-cpp">__global__ void __launch_bounds__(256, OFA_BLOCKS_PER_SM) ofa_kernel(const Ctx C) {
+  extern __shared__ __align__(128) unsigned char dsm[];
+  unsigned hw; asm volatile("mov.u32 %0, %%smid;" : "=r"(hw));
+  const int smid = C.smid_rank ? C.smid_rank[hw] : (int)hw;                          // dense rank of this SM
+  char* smem = reinterpret_cast&lt;char*&gt;(dsm);
+  const int isms = C.use_decode ? C.infer_sms : 0, dsms = C.use_decode ? C.doom_sms : 0;
+  if (smid &lt; isms) job_loop(C, C.dec, 1, smem);
+  else if (smid &lt; isms + dsms) { if (C.dm.on) doom_loop(C.dm); else return; }       // Doom's partition
+  else if (smid &lt; isms + dsms + C.train_sms) job_loop(C, C.train, 0, smem);
+  else return;                                                                       // SMs beyond the requested train share stay idle
+}</code></pre></div>
+<figure><div class="fig"><svg viewBox="0 0 1000 214" role="img" aria-label="The 148 SMs of a B200: 24 serve, 8 run Doom, 116 train"><rect x="1" y="6" width="24" height="30" rx="2" class="box"/><rect x="4" y="9" width="18" height="10.5" rx="1" class="c-serve"/><rect x="4" y="22.5" width="18" height="10.5" rx="1" class="c-serve"/><rect x="28" y="6" width="24" height="30" rx="2" class="box"/><rect x="31" y="9" width="18" height="10.5" rx="1" class="c-serve"/><rect x="31" y="22.5" width="18" height="10.5" rx="1" class="c-serve"/><rect x="55" y="6" width="24" height="30" rx="2" class="box"/><rect x="58" y="9" width="18" height="10.5" rx="1" class="c-serve"/><rect x="58" y="22.5" width="18" height="10.5" rx="1" class="c-serve"/><rect x="82" y="6" width="24" height="30" rx="2" class="box"/><rect x="85" y="9" width="18" height="10.5" rx="1" class="c-serve"/><rect x="85" y="22.5" width="18" height="10.5" rx="1" class="c-serve"/><rect x="109" y="6" width="24" height="30" rx="2" class="box"/><rect x="112" y="9" width="18" height="10.5" rx="1" class="c-serve"/><rect x="112" y="22.5" width="18" height="10.5" rx="1" class="c-serve"/><rect x="136" y="6" width="24" height="30" rx="2" class="box"/><rect x="139" y="9" width="18" height="10.5" rx="1" class="c-serve"/><rect x="139" y="22.5" width="18" height="10.5" rx="1" class="c-serve"/><rect x="163" y="6" width="24" height="30" rx="2" class="box"/><rect x="166" y="9" width="18" height="10.5" rx="1" class="c-serve"/><rect x="166" y="22.5" width="18" height="10.5" rx="1" class="c-serve"/><rect x="190" y="6" width="24" height="30" rx="2" class="box"/><rect x="193" y="9" width="18" height="10.5" rx="1" class="c-serve"/><rect x="193" y="22.5" width="18" height="10.5" rx="1" class="c-serve"/><rect x="217" y="6" width="24" height="30" rx="2" class="box"/><rect x="220" y="9" width="18" height="10.5" rx="1" class="c-serve"/><rect x="220" y="22.5" width="18" height="10.5" rx="1" class="c-serve"/><rect x="244" y="6" width="24" height="30" rx="2" class="box"/><rect x="247" y="9" width="18" height="10.5" rx="1" class="c-serve"/><rect x="247" y="22.5" width="18" height="10.5" rx="1" class="c-serve"/><rect x="271" y="6" width="24" height="30" rx="2" class="box"/><rect x="274" y="9" width="18" height="10.5" rx="1" class="c-serve"/><rect x="274" y="22.5" width="18" height="10.5" rx="1" class="c-serve"/><rect x="298" y="6" width="24" height="30" rx="2" class="box"/><rect x="301" y="9" width="18" height="10.5" rx="1" class="c-serve"/><rect x="301" y="22.5" width="18" height="10.5" rx="1" class="c-serve"/><rect x="325" y="6" width="24" height="30" rx="2" class="box"/><rect x="328" y="9" width="18" height="10.5" rx="1" class="c-serve"/><rect x="328" y="22.5" width="18" height="10.5" rx="1" class="c-serve"/><rect x="352" y="6" width="24" height="30" rx="2" class="box"/><rect x="355" y="9" width="18" height="10.5" rx="1" class="c-serve"/><rect x="355" y="22.5" width="18" height="10.5" rx="1" class="c-serve"/><rect x="379" y="6" width="24" height="30" rx="2" class="box"/><rect x="382" y="9" width="18" height="10.5" rx="1" class="c-serve"/><rect x="382" y="22.5" width="18" height="10.5" rx="1" class="c-serve"/><rect x="406" y="6" width="24" height="30" rx="2" class="box"/><rect x="409" y="9" width="18" height="10.5" rx="1" class="c-serve"/><rect x="409" y="22.5" width="18" height="10.5" rx="1" class="c-serve"/><rect x="433" y="6" width="24" height="30" rx="2" class="box"/><rect x="436" y="9" width="18" height="10.5" rx="1" class="c-serve"/><rect x="436" y="22.5" width="18" height="10.5" rx="1" class="c-serve"/><rect x="460" y="6" width="24" height="30" rx="2" class="box"/><rect x="463" y="9" width="18" height="10.5" rx="1" class="c-serve"/><rect x="463" y="22.5" width="18" height="10.5" rx="1" class="c-serve"/><rect x="487" y="6" width="24" height="30" rx="2" class="box"/><rect x="490" y="9" width="18" height="10.5" rx="1" class="c-serve"/><rect x="490" y="22.5" width="18" height="10.5" rx="1" class="c-serve"/><rect x="514" y="6" width="24" height="30" rx="2" class="box"/><rect x="517" y="9" width="18" height="10.5" rx="1" class="c-serve"/><rect x="517" y="22.5" width="18" height="10.5" rx="1" class="c-serve"/><rect x="541" y="6" width="24" height="30" rx="2" class="box"/><rect x="544" y="9" width="18" height="10.5" rx="1" class="c-serve"/><rect x="544" y="22.5" width="18" height="10.5" rx="1" class="c-serve"/><rect x="568" y="6" width="24" height="30" rx="2" class="box"/><rect x="571" y="9" width="18" height="10.5" rx="1" class="c-serve"/><rect x="571" y="22.5" width="18" height="10.5" rx="1" class="c-serve"/><rect x="595" y="6" width="24" height="30" rx="2" class="box"/><rect x="598" y="9" width="18" height="10.5" rx="1" class="c-serve"/><rect x="598" y="22.5" width="18" height="10.5" rx="1" class="c-serve"/><rect x="622" y="6" width="24" height="30" rx="2" class="box"/><rect x="625" y="9" width="18" height="10.5" rx="1" class="c-serve"/><rect x="625" y="22.5" width="18" height="10.5" rx="1" class="c-serve"/><rect x="649" y="6" width="24" height="30" rx="2" class="box"/><rect x="652" y="9" width="18" height="10.5" rx="1" class="c-doom"/><rect x="652" y="22.5" width="18" height="10.5" rx="1" class="c-doom"/><rect x="676" y="6" width="24" height="30" rx="2" class="box"/><rect x="679" y="9" width="18" height="10.5" rx="1" class="c-doom"/><rect x="679" y="22.5" width="18" height="10.5" rx="1" class="c-doom"/><rect x="703" y="6" width="24" height="30" rx="2" class="box"/><rect x="706" y="9" width="18" height="10.5" rx="1" class="c-doom"/><rect x="706" y="22.5" width="18" height="10.5" rx="1" class="c-doom"/><rect x="730" y="6" width="24" height="30" rx="2" class="box"/><rect x="733" y="9" width="18" height="10.5" rx="1" class="c-doom"/><rect x="733" y="22.5" width="18" height="10.5" rx="1" class="c-doom"/><rect x="757" y="6" width="24" height="30" rx="2" class="box"/><rect x="760" y="9" width="18" height="10.5" rx="1" class="c-doom"/><rect x="760" y="22.5" width="18" height="10.5" rx="1" class="c-doom"/><rect x="784" y="6" width="24" height="30" rx="2" class="box"/><rect x="787" y="9" width="18" height="10.5" rx="1" class="c-doom"/><rect x="787" y="22.5" width="18" height="10.5" rx="1" class="c-doom"/><rect x="811" y="6" width="24" height="30" rx="2" class="box"/><rect x="814" y="9" width="18" height="10.5" rx="1" class="c-doom"/><rect x="814" y="22.5" width="18" height="10.5" rx="1" class="c-doom"/><rect x="838" y="6" width="24" height="30" rx="2" class="box"/><rect x="841" y="9" width="18" height="10.5" rx="1" class="c-doom"/><rect x="841" y="22.5" width="18" height="10.5" rx="1" class="c-doom"/><rect x="865" y="6" width="24" height="30" rx="2" class="box"/><rect x="868" y="9" width="18" height="10.5" rx="1" class="c-train"/><rect x="868" y="22.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="892" y="6" width="24" height="30" rx="2" class="box"/><rect x="895" y="9" width="18" height="10.5" rx="1" class="c-train"/><rect x="895" y="22.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="919" y="6" width="24" height="30" rx="2" class="box"/><rect x="922" y="9" width="18" height="10.5" rx="1" class="c-train"/><rect x="922" y="22.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="946" y="6" width="24" height="30" rx="2" class="box"/><rect x="949" y="9" width="18" height="10.5" rx="1" class="c-train"/><rect x="949" y="22.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="973" y="6" width="24" height="30" rx="2" class="box"/><rect x="976" y="9" width="18" height="10.5" rx="1" class="c-train"/><rect x="976" y="22.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="1" y="46" width="24" height="30" rx="2" class="box"/><rect x="4" y="49" width="18" height="10.5" rx="1" class="c-train"/><rect x="4" y="62.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="28" y="46" width="24" height="30" rx="2" class="box"/><rect x="31" y="49" width="18" height="10.5" rx="1" class="c-train"/><rect x="31" y="62.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="55" y="46" width="24" height="30" rx="2" class="box"/><rect x="58" y="49" width="18" height="10.5" rx="1" class="c-train"/><rect x="58" y="62.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="82" y="46" width="24" height="30" rx="2" class="box"/><rect x="85" y="49" width="18" height="10.5" rx="1" class="c-train"/><rect x="85" y="62.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="109" y="46" width="24" height="30" rx="2" class="box"/><rect x="112" y="49" width="18" height="10.5" rx="1" class="c-train"/><rect x="112" y="62.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="136" y="46" width="24" height="30" rx="2" class="box"/><rect x="139" y="49" width="18" height="10.5" rx="1" class="c-train"/><rect x="139" y="62.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="163" y="46" width="24" height="30" rx="2" class="box"/><rect x="166" y="49" width="18" height="10.5" rx="1" class="c-train"/><rect x="166" y="62.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="190" y="46" width="24" height="30" rx="2" class="box"/><rect x="193" y="49" width="18" height="10.5" rx="1" class="c-train"/><rect x="193" y="62.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="217" y="46" width="24" height="30" rx="2" class="box"/><rect x="220" y="49" width="18" height="10.5" rx="1" class="c-train"/><rect x="220" y="62.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="244" y="46" width="24" height="30" rx="2" class="box"/><rect x="247" y="49" width="18" height="10.5" rx="1" class="c-train"/><rect x="247" y="62.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="271" y="46" width="24" height="30" rx="2" class="box"/><rect x="274" y="49" width="18" height="10.5" rx="1" class="c-train"/><rect x="274" y="62.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="298" y="46" width="24" height="30" rx="2" class="box"/><rect x="301" y="49" width="18" height="10.5" rx="1" class="c-train"/><rect x="301" y="62.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="325" y="46" width="24" height="30" rx="2" class="box"/><rect x="328" y="49" width="18" height="10.5" rx="1" class="c-train"/><rect x="328" y="62.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="352" y="46" width="24" height="30" rx="2" class="box"/><rect x="355" y="49" width="18" height="10.5" rx="1" class="c-train"/><rect x="355" y="62.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="379" y="46" width="24" height="30" rx="2" class="box"/><rect x="382" y="49" width="18" height="10.5" rx="1" class="c-train"/><rect x="382" y="62.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="406" y="46" width="24" height="30" rx="2" class="box"/><rect x="409" y="49" width="18" height="10.5" rx="1" class="c-train"/><rect x="409" y="62.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="433" y="46" width="24" height="30" rx="2" class="box"/><rect x="436" y="49" width="18" height="10.5" rx="1" class="c-train"/><rect x="436" y="62.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="460" y="46" width="24" height="30" rx="2" class="box"/><rect x="463" y="49" width="18" height="10.5" rx="1" class="c-train"/><rect x="463" y="62.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="487" y="46" width="24" height="30" rx="2" class="box"/><rect x="490" y="49" width="18" height="10.5" rx="1" class="c-train"/><rect x="490" y="62.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="514" y="46" width="24" height="30" rx="2" class="box"/><rect x="517" y="49" width="18" height="10.5" rx="1" class="c-train"/><rect x="517" y="62.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="541" y="46" width="24" height="30" rx="2" class="box"/><rect x="544" y="49" width="18" height="10.5" rx="1" class="c-train"/><rect x="544" y="62.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="568" y="46" width="24" height="30" rx="2" class="box"/><rect x="571" y="49" width="18" height="10.5" rx="1" class="c-train"/><rect x="571" y="62.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="595" y="46" width="24" height="30" rx="2" class="box"/><rect x="598" y="49" width="18" height="10.5" rx="1" class="c-train"/><rect x="598" y="62.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="622" y="46" width="24" height="30" rx="2" class="box"/><rect x="625" y="49" width="18" height="10.5" rx="1" class="c-train"/><rect x="625" y="62.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="649" y="46" width="24" height="30" rx="2" class="box"/><rect x="652" y="49" width="18" height="10.5" rx="1" class="c-train"/><rect x="652" y="62.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="676" y="46" width="24" height="30" rx="2" class="box"/><rect x="679" y="49" width="18" height="10.5" rx="1" class="c-train"/><rect x="679" y="62.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="703" y="46" width="24" height="30" rx="2" class="box"/><rect x="706" y="49" width="18" height="10.5" rx="1" class="c-train"/><rect x="706" y="62.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="730" y="46" width="24" height="30" rx="2" class="box"/><rect x="733" y="49" width="18" height="10.5" rx="1" class="c-train"/><rect x="733" y="62.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="757" y="46" width="24" height="30" rx="2" class="box"/><rect x="760" y="49" width="18" height="10.5" rx="1" class="c-train"/><rect x="760" y="62.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="784" y="46" width="24" height="30" rx="2" class="box"/><rect x="787" y="49" width="18" height="10.5" rx="1" class="c-train"/><rect x="787" y="62.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="811" y="46" width="24" height="30" rx="2" class="box"/><rect x="814" y="49" width="18" height="10.5" rx="1" class="c-train"/><rect x="814" y="62.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="838" y="46" width="24" height="30" rx="2" class="box"/><rect x="841" y="49" width="18" height="10.5" rx="1" class="c-train"/><rect x="841" y="62.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="865" y="46" width="24" height="30" rx="2" class="box"/><rect x="868" y="49" width="18" height="10.5" rx="1" class="c-train"/><rect x="868" y="62.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="892" y="46" width="24" height="30" rx="2" class="box"/><rect x="895" y="49" width="18" height="10.5" rx="1" class="c-train"/><rect x="895" y="62.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="919" y="46" width="24" height="30" rx="2" class="box"/><rect x="922" y="49" width="18" height="10.5" rx="1" class="c-train"/><rect x="922" y="62.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="946" y="46" width="24" height="30" rx="2" class="box"/><rect x="949" y="49" width="18" height="10.5" rx="1" class="c-train"/><rect x="949" y="62.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="973" y="46" width="24" height="30" rx="2" class="box"/><rect x="976" y="49" width="18" height="10.5" rx="1" class="c-train"/><rect x="976" y="62.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="1" y="86" width="24" height="30" rx="2" class="box"/><rect x="4" y="89" width="18" height="10.5" rx="1" class="c-train"/><rect x="4" y="102.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="28" y="86" width="24" height="30" rx="2" class="box"/><rect x="31" y="89" width="18" height="10.5" rx="1" class="c-train"/><rect x="31" y="102.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="55" y="86" width="24" height="30" rx="2" class="box"/><rect x="58" y="89" width="18" height="10.5" rx="1" class="c-train"/><rect x="58" y="102.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="82" y="86" width="24" height="30" rx="2" class="box"/><rect x="85" y="89" width="18" height="10.5" rx="1" class="c-train"/><rect x="85" y="102.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="109" y="86" width="24" height="30" rx="2" class="box"/><rect x="112" y="89" width="18" height="10.5" rx="1" class="c-train"/><rect x="112" y="102.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="136" y="86" width="24" height="30" rx="2" class="box"/><rect x="139" y="89" width="18" height="10.5" rx="1" class="c-train"/><rect x="139" y="102.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="163" y="86" width="24" height="30" rx="2" class="box"/><rect x="166" y="89" width="18" height="10.5" rx="1" class="c-train"/><rect x="166" y="102.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="190" y="86" width="24" height="30" rx="2" class="box"/><rect x="193" y="89" width="18" height="10.5" rx="1" class="c-train"/><rect x="193" y="102.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="217" y="86" width="24" height="30" rx="2" class="box"/><rect x="220" y="89" width="18" height="10.5" rx="1" class="c-train"/><rect x="220" y="102.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="244" y="86" width="24" height="30" rx="2" class="box"/><rect x="247" y="89" width="18" height="10.5" rx="1" class="c-train"/><rect x="247" y="102.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="271" y="86" width="24" height="30" rx="2" class="box"/><rect x="274" y="89" width="18" height="10.5" rx="1" class="c-train"/><rect x="274" y="102.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="298" y="86" width="24" height="30" rx="2" class="box"/><rect x="301" y="89" width="18" height="10.5" rx="1" class="c-train"/><rect x="301" y="102.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="325" y="86" width="24" height="30" rx="2" class="box"/><rect x="328" y="89" width="18" height="10.5" rx="1" class="c-train"/><rect x="328" y="102.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="352" y="86" width="24" height="30" rx="2" class="box"/><rect x="355" y="89" width="18" height="10.5" rx="1" class="c-train"/><rect x="355" y="102.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="379" y="86" width="24" height="30" rx="2" class="box"/><rect x="382" y="89" width="18" height="10.5" rx="1" class="c-train"/><rect x="382" y="102.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="406" y="86" width="24" height="30" rx="2" class="box"/><rect x="409" y="89" width="18" height="10.5" rx="1" class="c-train"/><rect x="409" y="102.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="433" y="86" width="24" height="30" rx="2" class="box"/><rect x="436" y="89" width="18" height="10.5" rx="1" class="c-train"/><rect x="436" y="102.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="460" y="86" width="24" height="30" rx="2" class="box"/><rect x="463" y="89" width="18" height="10.5" rx="1" class="c-train"/><rect x="463" y="102.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="487" y="86" width="24" height="30" rx="2" class="box"/><rect x="490" y="89" width="18" height="10.5" rx="1" class="c-train"/><rect x="490" y="102.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="514" y="86" width="24" height="30" rx="2" class="box"/><rect x="517" y="89" width="18" height="10.5" rx="1" class="c-train"/><rect x="517" y="102.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="541" y="86" width="24" height="30" rx="2" class="box"/><rect x="544" y="89" width="18" height="10.5" rx="1" class="c-train"/><rect x="544" y="102.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="568" y="86" width="24" height="30" rx="2" class="box"/><rect x="571" y="89" width="18" height="10.5" rx="1" class="c-train"/><rect x="571" y="102.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="595" y="86" width="24" height="30" rx="2" class="box"/><rect x="598" y="89" width="18" height="10.5" rx="1" class="c-train"/><rect x="598" y="102.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="622" y="86" width="24" height="30" rx="2" class="box"/><rect x="625" y="89" width="18" height="10.5" rx="1" class="c-train"/><rect x="625" y="102.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="649" y="86" width="24" height="30" rx="2" class="box"/><rect x="652" y="89" width="18" height="10.5" rx="1" class="c-train"/><rect x="652" y="102.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="676" y="86" width="24" height="30" rx="2" class="box"/><rect x="679" y="89" width="18" height="10.5" rx="1" class="c-train"/><rect x="679" y="102.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="703" y="86" width="24" height="30" rx="2" class="box"/><rect x="706" y="89" width="18" height="10.5" rx="1" class="c-train"/><rect x="706" y="102.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="730" y="86" width="24" height="30" rx="2" class="box"/><rect x="733" y="89" width="18" height="10.5" rx="1" class="c-train"/><rect x="733" y="102.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="757" y="86" width="24" height="30" rx="2" class="box"/><rect x="760" y="89" width="18" height="10.5" rx="1" class="c-train"/><rect x="760" y="102.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="784" y="86" width="24" height="30" rx="2" class="box"/><rect x="787" y="89" width="18" height="10.5" rx="1" class="c-train"/><rect x="787" y="102.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="811" y="86" width="24" height="30" rx="2" class="box"/><rect x="814" y="89" width="18" height="10.5" rx="1" class="c-train"/><rect x="814" y="102.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="838" y="86" width="24" height="30" rx="2" class="box"/><rect x="841" y="89" width="18" height="10.5" rx="1" class="c-train"/><rect x="841" y="102.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="865" y="86" width="24" height="30" rx="2" class="box"/><rect x="868" y="89" width="18" height="10.5" rx="1" class="c-train"/><rect x="868" y="102.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="892" y="86" width="24" height="30" rx="2" class="box"/><rect x="895" y="89" width="18" height="10.5" rx="1" class="c-train"/><rect x="895" y="102.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="919" y="86" width="24" height="30" rx="2" class="box"/><rect x="922" y="89" width="18" height="10.5" rx="1" class="c-train"/><rect x="922" y="102.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="946" y="86" width="24" height="30" rx="2" class="box"/><rect x="949" y="89" width="18" height="10.5" rx="1" class="c-train"/><rect x="949" y="102.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="973" y="86" width="24" height="30" rx="2" class="box"/><rect x="976" y="89" width="18" height="10.5" rx="1" class="c-train"/><rect x="976" y="102.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="1" y="126" width="24" height="30" rx="2" class="box"/><rect x="4" y="129" width="18" height="10.5" rx="1" class="c-train"/><rect x="4" y="142.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="28" y="126" width="24" height="30" rx="2" class="box"/><rect x="31" y="129" width="18" height="10.5" rx="1" class="c-train"/><rect x="31" y="142.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="55" y="126" width="24" height="30" rx="2" class="box"/><rect x="58" y="129" width="18" height="10.5" rx="1" class="c-train"/><rect x="58" y="142.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="82" y="126" width="24" height="30" rx="2" class="box"/><rect x="85" y="129" width="18" height="10.5" rx="1" class="c-train"/><rect x="85" y="142.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="109" y="126" width="24" height="30" rx="2" class="box"/><rect x="112" y="129" width="18" height="10.5" rx="1" class="c-train"/><rect x="112" y="142.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="136" y="126" width="24" height="30" rx="2" class="box"/><rect x="139" y="129" width="18" height="10.5" rx="1" class="c-train"/><rect x="139" y="142.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="163" y="126" width="24" height="30" rx="2" class="box"/><rect x="166" y="129" width="18" height="10.5" rx="1" class="c-train"/><rect x="166" y="142.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="190" y="126" width="24" height="30" rx="2" class="box"/><rect x="193" y="129" width="18" height="10.5" rx="1" class="c-train"/><rect x="193" y="142.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="217" y="126" width="24" height="30" rx="2" class="box"/><rect x="220" y="129" width="18" height="10.5" rx="1" class="c-train"/><rect x="220" y="142.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="244" y="126" width="24" height="30" rx="2" class="box"/><rect x="247" y="129" width="18" height="10.5" rx="1" class="c-train"/><rect x="247" y="142.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="271" y="126" width="24" height="30" rx="2" class="box"/><rect x="274" y="129" width="18" height="10.5" rx="1" class="c-train"/><rect x="274" y="142.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="298" y="126" width="24" height="30" rx="2" class="box"/><rect x="301" y="129" width="18" height="10.5" rx="1" class="c-train"/><rect x="301" y="142.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="325" y="126" width="24" height="30" rx="2" class="box"/><rect x="328" y="129" width="18" height="10.5" rx="1" class="c-train"/><rect x="328" y="142.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="352" y="126" width="24" height="30" rx="2" class="box"/><rect x="355" y="129" width="18" height="10.5" rx="1" class="c-train"/><rect x="355" y="142.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="379" y="126" width="24" height="30" rx="2" class="box"/><rect x="382" y="129" width="18" height="10.5" rx="1" class="c-train"/><rect x="382" y="142.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="406" y="126" width="24" height="30" rx="2" class="box"/><rect x="409" y="129" width="18" height="10.5" rx="1" class="c-train"/><rect x="409" y="142.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="433" y="126" width="24" height="30" rx="2" class="box"/><rect x="436" y="129" width="18" height="10.5" rx="1" class="c-train"/><rect x="436" y="142.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="460" y="126" width="24" height="30" rx="2" class="box"/><rect x="463" y="129" width="18" height="10.5" rx="1" class="c-train"/><rect x="463" y="142.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="487" y="126" width="24" height="30" rx="2" class="box"/><rect x="490" y="129" width="18" height="10.5" rx="1" class="c-train"/><rect x="490" y="142.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="514" y="126" width="24" height="30" rx="2" class="box"/><rect x="517" y="129" width="18" height="10.5" rx="1" class="c-train"/><rect x="517" y="142.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="541" y="126" width="24" height="30" rx="2" class="box"/><rect x="544" y="129" width="18" height="10.5" rx="1" class="c-train"/><rect x="544" y="142.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="568" y="126" width="24" height="30" rx="2" class="box"/><rect x="571" y="129" width="18" height="10.5" rx="1" class="c-train"/><rect x="571" y="142.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="595" y="126" width="24" height="30" rx="2" class="box"/><rect x="598" y="129" width="18" height="10.5" rx="1" class="c-train"/><rect x="598" y="142.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="622" y="126" width="24" height="30" rx="2" class="box"/><rect x="625" y="129" width="18" height="10.5" rx="1" class="c-train"/><rect x="625" y="142.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="649" y="126" width="24" height="30" rx="2" class="box"/><rect x="652" y="129" width="18" height="10.5" rx="1" class="c-train"/><rect x="652" y="142.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="676" y="126" width="24" height="30" rx="2" class="box"/><rect x="679" y="129" width="18" height="10.5" rx="1" class="c-train"/><rect x="679" y="142.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="703" y="126" width="24" height="30" rx="2" class="box"/><rect x="706" y="129" width="18" height="10.5" rx="1" class="c-train"/><rect x="706" y="142.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="730" y="126" width="24" height="30" rx="2" class="box"/><rect x="733" y="129" width="18" height="10.5" rx="1" class="c-train"/><rect x="733" y="142.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="757" y="126" width="24" height="30" rx="2" class="box"/><rect x="760" y="129" width="18" height="10.5" rx="1" class="c-train"/><rect x="760" y="142.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="784" y="126" width="24" height="30" rx="2" class="box"/><rect x="787" y="129" width="18" height="10.5" rx="1" class="c-train"/><rect x="787" y="142.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="811" y="126" width="24" height="30" rx="2" class="box"/><rect x="814" y="129" width="18" height="10.5" rx="1" class="c-train"/><rect x="814" y="142.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="838" y="126" width="24" height="30" rx="2" class="box"/><rect x="841" y="129" width="18" height="10.5" rx="1" class="c-train"/><rect x="841" y="142.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="865" y="126" width="24" height="30" rx="2" class="box"/><rect x="868" y="129" width="18" height="10.5" rx="1" class="c-train"/><rect x="868" y="142.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="892" y="126" width="24" height="30" rx="2" class="box"/><rect x="895" y="129" width="18" height="10.5" rx="1" class="c-train"/><rect x="895" y="142.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="919" y="126" width="24" height="30" rx="2" class="box"/><rect x="922" y="129" width="18" height="10.5" rx="1" class="c-train"/><rect x="922" y="142.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="946" y="126" width="24" height="30" rx="2" class="box"/><rect x="949" y="129" width="18" height="10.5" rx="1" class="c-train"/><rect x="949" y="142.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="973" y="126" width="24" height="30" rx="2" class="box"/><rect x="976" y="129" width="18" height="10.5" rx="1" class="c-train"/><rect x="976" y="142.5" width="18" height="10.5" rx="1" class="c-train"/><rect x="1" y="176" width="12" height="12" rx="2" class="c-serve"/><text x="19" y="186" font-size="12">SM rank 0–23: serve, 48 blocks</text><rect x="264.0" y="176" width="12" height="12" rx="2" class="c-doom"/><text x="282.0" y="186" font-size="12">24–31: Doom, 16 blocks</text><rect x="468.6" y="176" width="12" height="12" rx="2" class="c-train"/><text x="486.6" y="186" font-size="12">32–147: train, 232 blocks</text><text x="1" y="208" font-size="11" class="mut">each square is one SM; the two bars inside are its two resident blocks</text></svg></div><figcaption><b>The B200 split, 116 / 24 / 8.</b> Roles are assigned by physical SM, so the two blocks that share an SM always belong to the same job. The split matches the one in Flapping Airplanes' demo video; <code>--split</code> and <code>--infer-sms</code> change it.</figcaption></figure>
+<p>Why <code>%smid</code> and not <code>blockIdx.x</code>? The hardware does not promise which SM block <em>i</em> lands on. Partitioning by <code>blockIdx</code> could put a serving block and a training block on the same SM, where they compete for the SM's issue slots, L1 and shared-memory bandwidth, and the serving latency would depend on what training happens to be doing. Partitioning by <code>%smid</code> puts both blocks of an SM in the same job. The two roles never share an SM.</p>
+<p><code>%smid</code> has one wrinkle: it is a hardware ID, and on a part with disabled SMs the IDs may not be contiguous. The host runs a probe kernel with the same launch shape first; each block records its <code>%smid</code> in a bitmap and spins for about 2 ms so that every block is resident at once and every SM gets its share. If the IDs seen are not exactly 0 to <em>n</em>&minus;1, the host uploads a table mapping hardware ID to dense rank, which is the <code>smid_rank</code> lookup above. On the B200 used here the probe saw 148 SMs with IDs 0 to 147, so the table was not needed.</p>
+<p>Within the training partition, the two jobs that use <code>job_loop</code> each get their own <code>Job</code> struct, so their own ticket counter and their own <code>done[]</code> array. They share nothing except the bf16 weights.</p>
+</section>
+
+<!-- ================================================================== 12 -->
+<section class="col" id="serve">
+<h2><span class="n">12</span>Serving from weights that are still training</h2>
+<p>The decode job generates text one token at a time, batch 1, from the same bf16 weight buffer that AdamW rewrites every step. It runs through the same <code>job_loop</code>; only the phase table and the task bodies differ.</p>
+<p>Batch-1 decoding is a sequence of matrix-<em>vector</em> products: each weight is read once per token and used for one multiply-add. It is bound by memory bandwidth, not math, so its tasks are shaped around streaming weights (<code>llm/b200/megakernel/decode_wide.cuh</code>). One token is 38 phases, 2,225 tasks:</p>
+<div class="tablewrap"><table>
+<thead><tr><th>Phase (per token)</th><th class="num">Tasks</th><th>What one task does</th></tr></thead>
+<tbody>
+<tr><td>QKV, per layer</td><td class="num">36</td><td>LayerNorm of the residual (recomputed by every task), then 64 columns of the QKV GEMV; appends K and V to the cache</td></tr>
+<tr><td>ATT+WO, per layer</td><td class="num">36</td><td>softmax attention of one head over the cache, then that head's slice of the output projection for 256 columns</td></tr>
+<tr><td>UP+DOWN, per layer</td><td class="num">48</td><td>64 hidden units: up GEMV, GELU, then their contribution to all 768 outputs of the down projection</td></tr>
+<tr><td>HEAD</td><td class="num">784</td><td>final LayerNorm, 128 vocabulary rows of the tied head, and the best candidate in those rows</td></tr>
+<tr><td>SAMPLE</td><td class="num">1</td><td>pick the token from 784 candidates, advance the position, write the next token's embedding</td></tr>
+</tbody></table></div>
+<p>Fusing more per task (LayerNorm into the GEMV, attention into its output projection, up into down) cuts the number of phases per token, and each phase boundary is a wait on a counter. Each layer is three phases, not seven. The cross-token dependency is phase 0 of token <em>t</em>+1 on SAMPLE of token <em>t</em>, expressed with <code>delta = -1</code> exactly like training's cross-step dependencies.</p>
+<p>Three details make serving from live weights work.</p>
+<h3>1. Never read a weight from L1</h3>
+<p>Training SMs rewrite the bf16 weights every step. If a decode SM had a weight line cached in its L1 from an earlier token, it could keep reading the old value indefinitely, since L1 is not kept coherent with writes from other SMs. All weight loads in decode use a load that does not allocate in L1:</p>
+<div class="codewrap"><div class="codecap"><span>llm/b200/megakernel/decode_wide.cuh</span><span>lines 105&ndash;112</span></div>
+<pre><code class="language-cpp">// 16 B streaming load for weights / KV: weak load that does not allocate in L1 (so it can never hit a stale L1 line
+// even if the optimizer refreshed the weights earlier in the same kernel; not .nc for the same reason).
+__device__ __forceinline__ uint4 ldw(const void* p) {
+  uint4 r;
+  asm volatile("ld.global.L1::no_allocate.v4.u32 {%0,%1,%2,%3}, [%4];" : "=r"(r.x), "=r"(r.y), "=r"(r.z), "=r"(r.w) : "l"(p));
+  return r;
+}</code></pre></div>
+<p>The decode and training jobs do not synchronize at all, so a token's forward pass can read some layers before an AdamW update and some after. For a live demo of a model that changes slowly, that is acceptable. The served text gets better as the loss falls.</p>
+<h3>2. A residual stream in fixed point</h3>
+<p>The attention-output and down-projection tasks each produce a partial sum for some of the 768 residual entries, and many tasks add into the same entries. Floating-point atomics would make the result depend on the order tasks happen to finish. Decode instead keeps the residual as 64-bit integers in units of 2<sup>&minus;30</sup> and adds with integer atomics. Integer addition is associative, so the residual is bit-identical regardless of scheduling:</p>
+<div class="codewrap"><div class="codecap"><span>llm/b200/megakernel/decode_wide.cuh</span><span>fixed-point residual</span></div>
+<pre><code class="language-cpp">constexpr float FX_SCALE = 1073741824.0f;             // 2^30
+constexpr float FX_INV = 1.0f / 1073741824.0f;
+__device__ __forceinline__ unsigned long long fx(float v) { return (unsigned long long)llrintf(v * FX_SCALE); }
+__device__ __forceinline__ float unfx(unsigned long long u) { return (float)(long long)u * FX_INV; }
+...
+atomicAdd(&amp;st-&gt;xw[jb * 256 + tid], fx(r));            // end of the UP+DOWN task: add this task's down-projection partials</code></pre></div>
+<h3>3. Sampling as a two-level reduction</h3>
+<p>Each of the 784 HEAD tasks computes 128 logits and keeps its local best candidate twice: once for greedy decoding and once with Gumbel noise added (<code>logit / T + Gumbel</code>), whose argmax is a sample from the softmax at temperature <em>T</em>. The noise is counter-based (a hash of seed, step and vocabulary index), so sampling is reproducible. The 1-task SAMPLE phase reduces the 784 candidates, applies teacher forcing while a prompt is being fed, and writes the next token's embedding into the residual, which starts the next token. In "answer mode" the prompt is fed again after every <em>N</em> sampled tokens, so the dashboard keeps asking the training model the same question and the answers improve.</p>
+<p>The output tokens go to <strong>pinned, mapped host memory</strong> (<code>cudaHostAlloc</code> with <code>cudaHostAllocMapped</code>). The GPU writes them over PCIe while the kernel runs, and the host's HTTP server reads them directly. That is how a kernel that never returns can stream text to a browser.</p>
+</section>
+
+<!-- ================================================================== 13 -->
+<section class="col" id="doom">
+<h2><span class="n">13</span>Doom as a megakernel job</h2>
+<p>Doom is the most different of the three jobs: a large, branchy, single-threaded C program with a recursive BSP walk, never written for a GPU. The <code>doom-gpu/</code> directory compiles doomgeneric with clang's NVPTX backend against a small hand-written libc; varargs are lowered at the LLVM IR level because clang 14 cannot select <code>va_start</code> for NVPTX, and the result is a relocatable device object linked into the megakernel. The engine needs a lot of stack for its recursion, so the host raises the per-thread stack limit to 24 KB.</p>
+<p>The Doom partition (8 SMs, 16 blocks) runs its own loop, <code>doom_loop</code> in <code>doom_job.cuh</code>, with its own ticket. Each frame is 6 tickets: one <strong>tick</strong> task that advances the game by one 1/35 s tic and renders the frame, then 5 <strong>copy</strong> tasks that each copy 40 rows of the 320 &times; 200 frame (plus the palette) to pinned host memory. The dependencies are what you would expect: copies of frame <em>f</em> wait for tick <em>f</em>; tick <em>f</em>+1 waits for all copies of frame <em>f</em>, so the next frame never overwrites the buffer while it is being copied.</p>
+<div class="codewrap"><div class="codecap"><span>llm/b200/megakernel/doom_job.cuh</span><span><code>doom_loop</code>, the claim</span></div>
+<pre><code class="language-cpp">const unsigned g = dm_ld_vol(D.ticket);
+f = (int)(g / TPG); r = (int)(g % TPG);
+bool ready;
+if (r == 0) {
+  ready = (f == 0) || (dm_ld_acq(D.dctr + 1) &gt;= RT * f);
+  if (ready &amp;&amp; f &gt; 0) { const u64 ep = *reinterpret_cast&lt;volatile u64*&gt;(D.epoch); ready = ep != 0 &amp;&amp; dm_gtimer() &gt;= ep + (u64)f * (u64)FRAME_NS; }
+} else ready = dm_ld_acq(D.dctr + 0) &gt;= f + 1;
+if (!ready) { __nanosleep(r == 0 ? 20000 : 3000); continue; }
+if (atomicCAS(const_cast&lt;unsigned*&gt;(D.ticket), g, g + 1) == g) break;</code></pre></div>
+<p>Two differences from training are worth noticing. The tick has a <strong>time</strong> dependency as well as a data one: frame <em>f</em> may not start before <code>epoch + f &times; 28,571,429 ns</code>, read from <code>%globaltimer</code>, which paces the game at 35 Hz. And Doom claims with CAS-after-ready, the scheme training abandoned. At 35 frames per second and 16 contending blocks the CAS cost is irrelevant, and claiming only ready tickets means a block is never parked on a frame that is 28 ms in the future.</p>
+<p>Inside a tick, thread 0 runs the game, and the other 255 threads would idle. The repo's fix: thread 0 does not draw wall columns and floor spans itself but queues them, and at flush points all 256 threads execute the queue. One thread owns each screen column, so draws to the same column stay in order and the picture is pixel-identical to serial drawing. The rendezvous uses a <strong>named barrier</strong>:</p>
+<div class="codewrap"><div class="codecap"><span>doom-gpu/gpu_par.c</span><span>named barrier between the game thread and the workers</span></div>
+<pre><code class="language-cpp">// ONE shared barrier instruction: lane 0 (running the game) and its warp-mates (workers) must execute the identical bar.sync instruction or the warp never arrives
+__attribute__((noinline)) void gpu_bar(void) { asm volatile("bar.sync 2, 256;" ::: "memory"); }
+
+void gpu_flush(void) {                                   // thread 0 only
+  if (!gpu_par_active || (g_ncol == 0 &amp;&amp; g_nspan == 0)) return;
+  bar(); work(0); bar();
+  g_ncol = 0; g_nspan = 0;
+}
+void gpu_par_worker(int tid) { for (;;) { bar(); if (g_exit) { bar(); return; } work(tid); bar(); } }</code></pre></div>
+<p>Barrier 0 is what <code>__syncthreads()</code> uses, so the game uses ID 2 to stay out of its way. The comment records a real hazard: thread 0 and threads 1 to 31 are in the same warp but run different code paths, and a barrier counts warps, so both paths have to reach the <em>same</em> <code>bar.sync</code> instruction, hence one non-inlined function. This took a frame from 24 ms to 6.7 ms.</p>
+<p>Doom's real cost is at compile time. Linking a separate device object needs <code>nvcc -rdc=true</code>, and relocatable device code makes ptxas compile the whole kernel more conservatively: the A100 build's stack frame grew from 552 B to 1,464 B, with more spills, and training slowed by 18%. Stubbing out the Doom call gave the same slowdown, so the cause was <code>-rdc</code>, not Doom. The A100 fast build (<code>llm/ofa_fast</code>) avoids it by merging Doom's PTX into the kernel's PTX and compiling one module. The measured difference between Doom on and Doom off at the same split is within run-to-run noise.</p>
+</section>
+
+<!-- ================================================================== 14 -->
+<section class="col" id="blackwell">
+<h2><span class="n">14</span>Blackwell: tcgen05 inside a persistent kernel</h2>
+<p>On the B200, <code>mma.sync</code> still works but reaches only 13 to 33% of cuBLAS on this model's GEMM shapes. Blackwell's fast path is a different machine: the <strong>Tensor Memory Accelerator</strong> (TMA) copies tiles from global to shared memory asynchronously, a single thread issues <code>tcgen05.mma</code> instructions that read operands from shared memory through descriptors, and the accumulator lives in <strong>tensor memory</strong> (TMEM), a 512-column, 128-lane buffer per SM, not in registers. The repo's backend (<code>llm/b200/gemm_tcgen05/gemm_sm100.cuh</code>) keeps the same task contract and the same epilogue math, and reaches 34 to 73% of cuBLAS. With it the training run went from 95.8 s to 48.1 s.</p>
+<p>The tile is warp-specialized: lane 0 of warp 0 is the TMA producer, lane 0 of warp 1 issues the MMAs, and all 8 warps run the epilogue. The stages are coordinated with <code>mbarrier</code> objects in shared memory (<code>full[s]</code>, <code>empty[s]</code>, and one <code>accum</code>):</p>
+<div class="codewrap"><div class="codecap"><span>llm/b200/gemm_tcgen05/gemm_sm100.cuh</span><span>producer and MMA issuer</span></div>
+<pre><code class="language-cpp">if (warp == 0 &amp;&amp; lane == 0) {                                   // ---- TMA producer
+  asm volatile("fence.proxy.async;" ::: "memory");             // make generic-proxy writes of earlier megakernel phases visible to TMA (see README, risk R4)
+  for (int kt = 0; kt &lt; KT; kt++) {
+    const int s = kt % STAGES100, use = kt / STAGES100;
+    mbar_wait(empty(s), (use &amp; 1) ^ 1);
+    mbar_expect_tx(full(s), STAGE_BYTES);
+    ... tma_load_2d(sA, p.tmA, full(s), ...); tma_load_2d(sB, p.tmB, full(s), ...);
+  }
+} else if (warp == 1 &amp;&amp; lane == 0) {                            // ---- MMA issuer (one thread)
+  constexpr uint32_t IDESC = make_idesc(A_MN, B_MN);
+  for (int kt = 0; kt &lt; KT; kt++) {
+    const int s = kt % STAGES100;
+    mbar_wait(full(s), (kt / STAGES100) &amp; 1);
+    tc_fence_after();
+    ...
+    for (int kk = 0; kk &lt; BK100 / 16; kk++)
+      umma_bf16(tmem, da, db, IDESC, (kt &gt; 0 || kk &gt; 0) ? 1u : 0u);
+    umma_commit(empty(s));                                      // frees the smem stage when these MMAs are done
+  }
+  umma_commit(accum);                                           // accumulator complete
+}</code></pre></div>
+<p>Dropping this into a persistent kernel exposed three problems that a stand-alone GEMM test never sees.</p>
+<h3>The TMEM allocation permit</h3>
+<p>TMEM is allocated with <code>tcgen05.alloc</code>. While a block holds the SM's allocation permit, another block's <code>tcgen05.alloc</code> on the same SM waits until the holder <em>exits</em>. In a normal kernel blocks exit after one tile, so this is invisible. In a persistent kernel they never exit: allocating per tile would serialize the two co-resident blocks of an SM, and could deadlock them. The fix is to allocate once per block, give up the permit immediately, and free at the very end:</p>
+<div class="codewrap"><div class="codecap"><span>llm/b200/gemm_tcgen05/gemm_sm100.cuh</span><span>once per block, from <code>job_loop</code></span></div>
+<pre><code class="language-cpp">__device__ __forceinline__ void block_init_tc() {
+  if (threadIdx.x &lt; 32) {
+    tmem_alloc((uint32_t)__cvta_generic_to_shared(&amp;tmem_base_s), TMEM_COLS);
+    asm volatile("tcgen05.relinquish_alloc_permit.cta_group::1.sync.aligned;" ::: "memory");
+  }
+  tc_fence_before();
+  __syncthreads();
+  tc_fence_after();
+}</code></pre></div>
+<p>Each block keeps 128 of the SM's 512 columns for its lifetime. This is also why the occupancy API reports one block per SM for this kernel: it assumes the conservative case. The host computes the real fit from registers and shared memory instead (section 2).</p>
+<h3>Two memory proxies</h3>
+<p>TMA reads global memory through the <em>async proxy</em>; ordinary loads and stores use the <em>generic proxy</em>, and the two are not ordered with each other by default. Here the operands of a GEMM were written moments earlier by another phase's ordinary stores, and the release/acquire handshake of section 5 orders generic-proxy accesses only. The producer therefore issues <code>fence.proxy.async</code> before its first TMA load. The research log records what happens without it in an earlier kernel: bit-exact on 7 of 7 test cases, then wrong on 3 of 66 served requests. Tests that check arithmetic do not exercise synchronization.</p>
+<h3>Shared memory as the epilogue's staging area</h3>
+<p>The accumulator leaves TMEM through <code>tcgen05.ld</code> into registers, then goes through a 64 KB fp32 staging tile placed in the now-idle pipeline buffers so that global stores are coalesced, one tile row per warp instruction. The per-element math is the same <code>epi_store</code> logic as the A100 GEMM, and the loss is bit-identical with either backend.</p>
+</section>
+
+<!-- ================================================================== 15 -->
+<section class="col" id="host">
+<h2><span class="n">15</span>The host side and the results</h2>
+<p>With all of this, <code>main()</code> reduces to building tables, copying them to the device, and one launch:</p>
+<div class="codewrap"><div class="codecap"><span>llm/b200/megakernel/ofa.cu</span><span>lines 707&ndash;716</span></div>
+<pre><code class="language-cpp">cudaEvent_t e0, e1; CK(cudaEventCreate(&amp;e0)); CK(cudaEventCreate(&amp;e1));
+const double tw0 = now_s();
+dash::t0 = dash::now_s(); dash::phase = 1;
+CK(cudaEventRecord(e0)); ofa_kernel&lt;&lt;&lt;nblocks, 256, DYN_SMEM&gt;&gt;&gt;(C); CK(cudaEventRecord(e1));
+std::vector&lt;int&gt; seen_tokens; size_t shown = 0; std::string textdump;
+while (cudaEventQuery(e1) == cudaErrorNotReady) {
+  usleep(200000);
+  ...
+}</code></pre></div>
+<p>While the kernel runs, the host never touches the GPU through the CUDA API. A background thread serves an HTTP dashboard that reads the pinned, mapped buffers the kernel writes: the loss and step counters, the token stream, and the Doom frame. Writes to those buffers from the GPU are followed by <code>__threadfence_system()</code> where the order matters to the host, such as publishing the frame count after the frame.</p>
+<p>The run in the header used 116 SMs for training, 24 for serving and 8 for Doom. Per-phase busy time from the kernel's own profiler, grouped:</p>
+<div class="tablewrap"><table>
+<thead><tr><th>Work, all 4,000 steps</th><th class="num">Share of training busy time</th><th></th></tr></thead>
+<tbody>
+<tr><td>Vocabulary-sized work: logits GEMM, cross-entropy, head dX, head dW<sub>te</sub>, embedding backward + AdamW</td><td class="num">41.5%</td><td><span class="bar" style="width:166px"></span></td></tr>
+<tr><td>Transformer-layer GEMMs, forward and backward</td><td class="num">39.4%</td><td><span class="bar" style="width:158px"></span></td></tr>
+<tr><td>Attention forward and backward</td><td class="num">13.0%</td><td><span class="bar" style="width:52px"></span></td></tr>
+<tr><td>AdamW per layer group</td><td class="num">about 6%</td><td><span class="bar" style="width:24px"></span></td></tr>
+<tr><td>LayerNorm forward and backward</td><td class="num">3.7%</td><td><span class="bar" style="width:15px"></span></td></tr>
+</tbody></table></div>
+<p class="source-note">Shares sum the per-kind rows of <code>split_r2.txt</code>; they are rounded and slightly overlap at the edges (the fused embedding AdamW is counted with the vocabulary work).</p>
+<p>A 162M-parameter model with a 100k vocabulary spends more time on the vocabulary than on its 12 transformer layers. The same log reports utilization as task time over wall time: training kept 97.8 SM-equivalents busy out of 116 (84%), and serving 17.4 out of 24. The rest is waiting on counters, claim overhead, and the steady-state cost of the dependency structure. Each step took 12.04 ms (median 12.03), 340,000 tokens per second, and the loss went from 11.71 to 2.1575.</p>
+<p>Against baselines measured on the same B200 with the same SM shares (CUDA MPS), from the repository README:</p>
+<div class="tablewrap"><table>
+<thead><tr><th>System</th><th class="num">4,000 training steps</th><th class="num">Serving</th></tr></thead>
+<tbody>
+<tr><td>This megakernel, <code>tcgen05</code>, 3 stages, while also serving and running Doom</td><td class="num">48.1 s</td><td class="num">1,660 tok/s</td></tr>
+<tr><td>This megakernel, <code>mma.sync</code> GEMMs</td><td class="num">95.8 s</td><td class="num">1,783 tok/s</td></tr>
+<tr><td>Megatron-core + Transformer Engine, eager, 116 SMs</td><td class="num">62.4 s</td><td class="num">&ndash;</td></tr>
+<tr><td>Megatron-core + Transformer Engine, CUDA graphs, 116 SMs</td><td class="num">43.1 s</td><td class="num">&ndash;</td></tr>
+<tr><td>PyTorch + flash attention, one CUDA graph per step</td><td class="num">50.9 s</td><td class="num">&ndash;</td></tr>
+<tr><td>vLLM 0.33.0, CUDA graphs, 24 SMs</td><td class="num">&ndash;</td><td class="num">1,537 tok/s</td></tr>
+</tbody></table></div>
+</section>
+
+<!-- ================================================================== 16 -->
+<section class="col" id="limits">
+<h2><span class="n">16</span>What it does not buy you</h2>
+<p>The table above contains the most important caveat: Megatron with Transformer Engine and CUDA graphs trains faster than this megakernel on the same SMs, 43.1 s against 48.1 s. Removing launches is not the same as being fast. Specifically:</p>
+<ul>
+<li><strong>The GEMMs are not cuBLAS.</strong> At 34 to 73% of cuBLAS per shape, and with GEMMs at roughly 80% of training time, the task bodies matter more than the scheduler. A megakernel needs kernel-quality task code, and it gets none of a vendor library's tuning for free, since vendor kernels cannot be called as device functions.</li>
+<li><strong>Intermediates still go through memory.</strong> Every phase writes its output to global memory and the next phase reads it back, mostly from L2. Fusion across phases only happens where the task code does it by hand (epilogues, fused decode tasks).</li>
+<li><strong>The schedule is fixed at build time.</strong> Ticket order is the order of the phase table. A smarter order (critical-path priority, the classic list-scheduling heuristic) would need a different table, not a runtime decision.</li>
+<li><strong>No preemption.</strong> Static SM partitions are how this design meets deadlines. SMs given to serving cannot help training when serving is idle, and vice versa.</li>
+<li><strong>One register budget and one shared-memory size</strong> for every task, and compile-time effects that reach across the whole kernel (the <code>-rdc</code> slowdown).</li>
+<li><strong>Debugging is harder.</strong> A missing fence is a rare wrong answer, not a crash; a missing dependency edge is a hang or a nondeterministic loss. The determinism of every task is what makes such bugs findable: if the loss file changes, the scheduler is wrong.</li>
+</ul>
+<p>Where it pays clearly is the combination: running training, serving and a game in one process on one GPU. On the same B200, Megatron (with graphs) followed by vLLM takes about 102 s sequentially and about 59 s side by side on their SM shares (estimated from separate runs), against 52.4 s measured for the 2-stage megakernel doing both at once.</p>
+</section>
+
+<!-- ================================================================== 17 -->
+<section class="col" id="checklist">
+<h2><span class="n">17</span>A checklist for your own</h2>
+<p>If you build one, these are the rules the code above follows, in roughly the order you will need them.</p>
+<ol class="checklist">
+<li><strong>Launch exactly one resident wave</strong>, sized from registers, shared memory and threads, and check it on the device you run on. Anything that waits on another block depends on this.</li>
+<li><strong>Write task bodies to a contract:</strong> all threads of a block, no <code>blockIdx</code>, shared memory passed in, a barrier at the end. Test each one alone against a reference before it goes near the scheduler.</li>
+<li><strong>Claim with one unconditional fetch-add</strong>, and keep every dependency pointing to a lower ticket so the claim cannot deadlock. A CAS retry loop on one counter will not scale to hundreds of blocks.</li>
+<li><strong>Publish with fence, barrier, atomic; consume with acquire load, barrier.</strong> Read data produced in the same launch through L2 (<code>.cg</code>, <code>L1::no_allocate</code>), never through the read-only or L1 path.</li>
+<li><strong>Never reset a counter.</strong> Make targets a function of the step, and cross-step dependencies fall out of the same formula.</li>
+<li><strong>Give buffers to phases, not to time.</strong> Per-layer activations remove write-after-read edges you would otherwise forget.</li>
+<li><strong>Keep the math deterministic.</strong> No float atomics, fixed reduction orders, integer atomics when many tasks must add into one place. Then the loss curve is a test of your synchronization.</li>
+<li><strong>Partition by <code>%smid</code></strong> when jobs need isolation or deadlines, and probe the ID space first.</li>
+<li><strong>Allocate per-block hardware resources once</strong> (TMEM, barriers) and release permits that would block co-resident blocks.</li>
+<li><strong>Fence across proxies</strong> when an async engine (TMA) reads what ordinary stores wrote.</li>
+<li><strong>Instrument from inside.</strong> <code>%globaltimer</code>, per-phase busy time and per-step completion stamps cost a few atomics and are the only profiler that sees inside a kernel that never returns.</li>
+</ol>
+</section>
+
+<footer class="col">
+<p>Written about the code in <a href="https://github.com/JordanLazzaro/open-flapping-airplanes">open-flapping-airplanes</a>. Excerpts are from <code>llm/b200/megakernel/ofa.cu</code>, <code>decode_wide.cuh</code>, <code>doom_job.cuh</code>, <code>llm/gemm/gemm.cuh</code>, <code>llm/b200/gemm_tcgen05/gemm_sm100.cuh</code> and <code>doom-gpu/gpu_par.c</code>; some are shortened with <code>...</code>. Numbers are from <code>b200-run/results/</code>, the repository README and <code>docs/RESEARCH.md</code>.</p>
+</footer>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script>
+(function () {
+  try { if (window.hljs) { document.querySelectorAll('pre code').forEach(function (el) { el.classList.add('language-cpp'); window.hljs.highlightElement(el); }); } } catch (e) {}
+
+  // ---------------- toy scheduler simulator
+  var L = 3;
+  function buildGraph() {
+    // phases in ticket (table) order; deps: [phaseIndex, delta]
+    var ph = [], idx = {};
+    function add(name, kind, n, dur, deps) { idx[name] = ph.length; ph.push({ name: name, kind: kind, n: n, dur: dur, deps: deps }); }
+    for (var l = 0; l < L; l++) add('F' + l, 'fwd', 6, 8, l ? [['F' + (l - 1), 0]] : []);
+    add('H', 'head', 8, 10, [['F' + (L - 1), 0]]);
+    var prev = 'H';
+    for (var l2 = L - 1; l2 >= 0; l2--) {
+      add('W' + l2, 'dw', 4, 9, [[prev, 0]]);
+      add('X' + l2, 'dx', 6, 8, [[prev, 0]]);
+      prev = 'X' + l2;
+    }
+    for (var l3 = L - 1; l3 >= 0; l3--) add('A' + l3, 'adam', 2, 5, [['W' + l3, 0], ['X' + l3, 0]]);
+    // cross-step: forward of layer l waits for AdamW of layer l, previous step
+    for (var l4 = 0; l4 < L; l4++) ph[idx['F' + l4]].deps.push(['A' + l4, -1]);
+    ph.forEach(function (p) { p.deps = p.deps.map(function (d) { return [idx[d[0]], d[1]]; }); });
+    return ph;
+  }
+  var GRAPH = buildGraph(), STEPS = 3;
+  function rng(seed) { var s = seed >>> 0 || 1; return function () { s ^= s << 13; s >>>= 0; s ^= s >>> 17; s ^= s << 5; s >>>= 0; return s / 4294967296; }; }
+  var seed = 7;
+  function durations(jit) {
+    var r = rng(seed), d = [];
+    for (var s = 0; s < STEPS; s++) { d.push([]); GRAPH.forEach(function (p) { var a = []; for (var i = 0; i < p.n; i++) a.push(p.dur * (1 + jit * (2 * r() - 1))); d[s].push(a); }); }
+    return d;
+  }
+  function simKPO(nb, gap, D) {
+    var t = 0, bars = [];
+    for (var s = 0; s < STEPS; s++) GRAPH.forEach(function (p, pi) {
+      t += gap; var free = []; for (var b = 0; b < nb; b++) free.push(t);
+      for (var i = 0; i < p.n; i++) {
+        var b2 = 0; for (var k = 1; k < nb; k++) if (free[k] < free[b2]) b2 = k;
+        var st = free[b2], en = st + D[s][pi][i]; bars.push({ b: b2, s: st, e: en, k: p.kind }); free[b2] = en;
+      }
+      t = Math.max.apply(null, free);
+    });
+    return { bars: bars, T: t };
+  }
+  function simMK(nb, D) {
+    var CLAIM = 0.3, free = [], bars = [], fin = []; // fin[s][p] = completion time of phase
+    for (var b = 0; b < nb; b++) free.push(0);
+    var tickets = [];
+    for (var s = 0; s < STEPS; s++) { fin.push([]); GRAPH.forEach(function (p, pi) { fin[s].push({ n: 0, t: 0 }); for (var i = 0; i < p.n; i++) tickets.push([s, pi, i]); }); }
+    tickets.forEach(function (tk) {
+      var s = tk[0], pi = tk[1], i = tk[2], p = GRAPH[pi];
+      var b2 = 0; for (var k = 1; k < nb; k++) if (free[k] < free[b2]) b2 = k;   // the next block to come back claims the next ticket
+      var ready = free[b2] + CLAIM;
+      p.deps.forEach(function (d) { var ss = s + d[1]; if (ss >= 0) ready = Math.max(ready, fin[ss][d[0]].t); });
+      var en = ready + D[s][pi][i];
+      bars.push({ b: b2, s: ready, e: en, k: p.kind, w: free[b2] });
+      free[b2] = en; var f = fin[s][pi]; f.n++; f.t = Math.max(f.t, en);
+    });
+    return { bars: bars, T: Math.max.apply(null, free) };
+  }
+  function css(v) { return getComputedStyle(document.documentElement).getPropertyValue(v).trim() || '#888'; }
+  function draw(cv, res, nb, Tmax) {
+    var dpr = window.devicePixelRatio || 1, w = cv.clientWidth || 900, rowH = Math.max(10, Math.min(18, Math.floor(150 / nb))), h = nb * rowH + 22;
+    cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); cv.style.height = h + 'px';
+    var g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, w, h);
+    var col = { fwd: css('--op-fwd'), head: css('--op-head'), dx: css('--op-dx'), dw: css('--op-dw'), adam: css('--op-adam') };
+    var x = function (t) { return 4 + (w - 8) * t / Tmax; };
+    g.fillStyle = css('--rule');
+    for (var b = 0; b < nb; b++) g.fillRect(4, b * rowH + rowH - 1, w - 8, 1);
+    res.bars.forEach(function (r) {
+      if (r.w !== undefined && r.s - r.w > 0.35) { g.fillStyle = css('--idle'); g.fillRect(x(r.w), r.b * rowH + rowH * 0.42, Math.max(1, x(r.s) - x(r.w)), Math.max(2, rowH * 0.16)); }
+      g.fillStyle = col[r.k]; g.fillRect(x(r.s) + 0.5, r.b * rowH + 2, Math.max(1, x(r.e) - x(r.s) - 1), rowH - 4);
+    });
+    g.fillStyle = css('--muted'); g.font = '11px ' + css('--f-mono');
+    for (var t = 0; t <= Tmax; t += 50) { g.fillRect(x(t), nb * rowH, 1, 5); g.fillText(t + ' µs', Math.min(x(t) + 3, w - 44), nb * rowH + 16); }
+  }
+  var $ = function (id) { return document.getElementById(id); };
+  function run() {
+    var nb = +$('s-blocks').value, gap = +$('s-gap').value, jit = +$('s-jit').value / 100;
+    $('o-blocks').textContent = nb; $('o-gap').textContent = gap; $('o-jit').textContent = Math.round(jit * 100) + '%';
+    var D = durations(jit), a = simKPO(nb, gap, D), m = simMK(nb, D), Tmax = Math.max(a.T, m.T);
+    var work = 0; m.bars.forEach(function (r) { work += r.e - r.s; });
+    draw($('c-kpo'), a, nb, Tmax); draw($('c-mk'), m, nb, Tmax);
+    var launches = STEPS * GRAPH.length;
+    $('t-kpo').textContent = launches + ' launches · ' + a.T.toFixed(0) + ' µs · ' + (100 * work / (a.T * nb)).toFixed(0) + '% busy';
+    $('t-mk').textContent = '1 launch · ' + m.T.toFixed(0) + ' µs · ' + (100 * work / (m.T * nb)).toFixed(0) + '% busy';
+    $('verdict').innerHTML = 'Same ' + m.bars.length + ' tasks, same durations: the megakernel finishes in <b>' + (100 * m.T / a.T).toFixed(0) + '%</b> of the time. Grey ticks are blocks holding a claimed ticket while they wait on a counter.';
+  }
+  ['s-blocks', 's-gap', 's-jit'].forEach(function (id) { $(id).addEventListener('input', run); });
+  $('s-seed').addEventListener('click', function () { seed = (seed * 1103515245 + 12345) >>> 0; run(); });
+  window.addEventListener('resize', run);
+  if (window.matchMedia) { try { window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', run); } catch (e) {} }
+  new MutationObserver(run).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+  run();
+})();
+</script>

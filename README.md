@@ -235,7 +235,7 @@ Modal runs cost money (a B200 is billed per second); read `b200-run/README.md` b
 | `site/` | Static stats website (`index.html`, `data/`, `assets/`) |
 | `video/` | Sources of the explainer video and of the B200 demo video |
 | `tools/` | `gen_svgs.py` regenerates the animated SVGs |
-| `docs/` | `FA_COMPARISON.md` (every run next to FA's numbers), `RESEARCH.md` (research log), `REORG_PLAN.md` (a folder regrouping that is not done) |
+| `docs/` | `megakernel-from-first-principles.html` (a technical walkthrough that builds the megakernel up step by step; open it in a browser), `FA_COMPARISON.md` (every run next to FA's numbers), `RESEARCH.md` (research log), `REORG_PLAN.md` (a folder regrouping that is not done) |
 
 ## Limitations
 
